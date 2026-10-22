@@ -25,6 +25,8 @@ DATA_DIR = Path("/data") if Path("/data").is_dir() else Path(__file__).resolve()
 DB = DATA_DIR / "events.sqlite3"
 TZ = ZoneInfo("Europe/Moscow")
 TITLE, DESCRIPTION, CATEGORY, DATE, TIME, ADDRESS, CONDITIONS, CAPACITY, VISIBILITY, GROUP = range(10)
+EDIT_VALUE = 20
+EDIT_FIELDS = {"title": "Название", "description": "Описание", "date": "Дата", "time": "Время", "address": "Адрес", "conditions": "Условия", "capacity": "Количество мест", "category": "Категория"}
 DAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 CATEGORIES = {
     "games": "🎲 Игры",
@@ -937,12 +939,157 @@ async def show_participants(update, event_id, bot):
         await update.effective_message.reply_text(chunk)
 
 
+async def manage_participants(update, context, event_id):
+    if update.effective_chat.type != "private":
+        await update.effective_message.reply_text("Управление участниками доступно только в личке.")
+        return
+    with connection() as con:
+        event = event_with_count(con, event_id)
+        if not event or event["owner_id"] != update.effective_user.id:
+            await update.effective_message.reply_text("Встреча не найдена или вы не организатор.")
+            return
+        people = con.execute("SELECT user_id,telegram_name FROM signups WHERE event_id=? ORDER BY created_at,user_id", (event_id,)).fetchall()
+    if not people:
+        await update.effective_message.reply_text("Пока никто не записался.")
+        return
+    keyboard = [[InlineKeyboardButton("❌ " + (r["telegram_name"] or str(r["user_id"]))[:45], callback_data=f"kickask:{event_id}:{r['user_id']}")] for r in people]
+    await update.effective_message.reply_text("Кого удалить из встречи?", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def start_edit(update, context):
+    q = update.callback_query
+    await q.answer()
+    if q.message.chat.type != "private":
+        await q.message.reply_text("Редактирование доступно только в личке с ботом.")
+        return ConversationHandler.END
+    try:
+        event_id = int(q.data.split(":")[1])
+        field = q.data.split(":")[2]
+    except (IndexError, ValueError):
+        return ConversationHandler.END
+    if field not in EDIT_FIELDS:
+        return ConversationHandler.END
+    with connection() as con:
+        event = event_with_count(con, event_id)
+    if not event or event["owner_id"] != q.from_user.id:
+        await q.message.reply_text("Вы не можете редактировать эту встречу.")
+        return ConversationHandler.END
+    context.user_data["edit_event"] = (event_id, field)
+    if field == "category":
+        keyboard = [[InlineKeyboardButton(name, callback_data=f"editcat:{event_id}:{key}")] for key, name in CATEGORIES.items()]
+        await q.message.reply_text("Выберите категорию:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+    hints = {"date": "ДД.ММ.ГГГГ", "time": "ЧЧ:ММ (Москва)", "capacity": "число от 1 до 1000"}
+    await q.message.reply_text(f"Введите новое значение: {EDIT_FIELDS[field]} ({hints.get(field, 'текст')}).\n/cancel — отмена")
+    return EDIT_VALUE
+
+
+async def receive_edit(update, context):
+    state = context.user_data.get("edit_event")
+    if not state:
+        return ConversationHandler.END
+    event_id, field = state
+    value = update.message.text.strip()
+    try:
+        with connection() as con:
+            event = event_with_count(con, event_id)
+            if not event or event["owner_id"] != update.effective_user.id:
+                raise ValueError("Встреча не найдена.")
+            if field == "date":
+                d = datetime.strptime(value, "%d.%m.%Y").date()
+                if not now().date() <= d <= (now() + timedelta(days=365)).date():
+                    raise ValueError("Дата должна быть в пределах следующего года.")
+                value = d.isoformat()
+            elif field == "time":
+                value = datetime.strptime(value, "%H:%M").strftime("%H:%M")
+            elif field == "capacity":
+                value = int(value)
+                if not event["booked"] <= value <= 1000 or value < 1:
+                    raise ValueError(f"Мест должно быть не меньше числа записанных ({event['booked']}) и не больше 1000.")
+            else:
+                limits = {"title": (3, 100), "description": (0, 1000), "address": (5, 250), "conditions": (2, 500)}
+                low, high = limits[field]
+                if not low <= len(value) <= high:
+                    raise ValueError(f"Длина текста: от {low} до {high} символов.")
+            date = value if field == "date" else event["date"]
+            time = value if field == "time" else event["time"]
+            if datetime.fromisoformat(f"{date}T{time}").replace(tzinfo=TZ) <= now():
+                raise ValueError("Встреча должна быть в будущем.")
+            con.execute(f"UPDATE events SET {field}=? WHERE id=? AND owner_id=?", (value, event_id, update.effective_user.id))
+    except (ValueError, KeyError) as exc:
+        await update.message.reply_text(f"❗ {exc} Попробуйте ещё раз или /cancel.")
+        return EDIT_VALUE
+    context.user_data.pop("edit_event", None)
+    await refresh_event_messages(context.bot, event_id)
+    await update.message.reply_text("✅ Встреча обновлена. Карточки в чатах тоже обновлены.")
+    return ConversationHandler.END
+
+
+async def cancel_edit(update, context):
+    context.user_data.pop("edit_event", None)
+    await update.message.reply_text("Редактирование отменено.")
+    return ConversationHandler.END
+
+
 async def buttons(update, context):
     q = update.callback_query
     await q.answer()
     data = q.data
     message = q.message
     parts = data.split(":")
+
+    if parts[0] in {"managepeople", "kickask", "kickconfirm", "kickcancel", "editmenu", "editcat"}:
+        if message.chat.type != "private":
+            await message.reply_text("Управление встречей доступно только в личке с ботом.")
+            return
+        try:
+            event_id = int(parts[1])
+        except (IndexError, ValueError):
+            await message.reply_text("Неверный номер встречи.")
+            return
+        with connection() as con:
+            event = event_with_count(con, event_id)
+        if not event or event["owner_id"] != update.effective_user.id:
+            await message.reply_text("Вы не организатор этой встречи или встреча удалена.")
+            return
+        if parts[0] == "managepeople":
+            await manage_participants(update, context, event_id)
+        elif parts[0] == "editmenu":
+            keyboard = [[InlineKeyboardButton(label, callback_data=f"editfield:{event_id}:{field}")] for field, label in EDIT_FIELDS.items()]
+            await message.reply_text("Что изменить?", reply_markup=InlineKeyboardMarkup(keyboard))
+        elif parts[0] == "editcat":
+            if len(parts) < 3 or parts[2] not in CATEGORIES:
+                return
+            with connection() as con:
+                con.execute("UPDATE events SET category=? WHERE id=? AND owner_id=?", (parts[2], event_id, update.effective_user.id))
+            await refresh_event_messages(context.bot, event_id)
+            await message.reply_text("✅ Категория изменена.")
+        else:
+            try:
+                user_id = int(parts[2])
+            except (IndexError, ValueError):
+                return
+            with connection() as con:
+                person = con.execute("SELECT telegram_name FROM signups WHERE event_id=? AND user_id=?", (event_id, user_id)).fetchone()
+            if not person:
+                await message.reply_text("Участник уже не записан.")
+                return
+            name = person["telegram_name"] or str(user_id)
+            if parts[0] == "kickask":
+                await message.reply_text(f"Удалить участника {name}?", reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Да, удалить", callback_data=f"kickconfirm:{event_id}:{user_id}"),
+                    InlineKeyboardButton("Нет", callback_data=f"kickcancel:{event_id}:{user_id}")]]))
+            elif parts[0] == "kickcancel":
+                await message.reply_text("Удаление отменено.")
+            else:
+                with connection() as con:
+                    deleted = con.execute("DELETE FROM signups WHERE event_id=? AND user_id=?", (event_id, user_id)).rowcount
+                if deleted:
+                    await refresh_event_messages(context.bot, event_id)
+                    await message.reply_text(f"✅ {name} удалён из встречи. Место освобождено.")
+                else:
+                    await message.reply_text("Участник уже удалён.")
+        return
 
     if parts[0] in {"deleteask", "deleteconfirm", "deletecancel"}:
         if message.chat.type != "private":
@@ -1156,9 +1303,11 @@ async def mine(update, context):
     for e in rows:
         await update.message.reply_text(
             f"№{e['id']} · {e['title']} · {e['date']} {e['time']} · {e['booked']}/{e['capacity']}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🗑 Удалить встречу", callback_data=f"deleteask:{e['id']}")
-            ]]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Редактировать", callback_data=f"editmenu:{e['id']}")],
+                [InlineKeyboardButton("👥 Управлять участниками", callback_data=f"managepeople:{e['id']}")],
+                [InlineKeyboardButton("🗑 Удалить встречу", callback_data=f"deleteask:{e['id']}")],
+            ]),
         )
 
 
@@ -1206,6 +1355,12 @@ def main():
         ],
     )
     app.add_handler(conversation)
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_edit, pattern=r"^editfield:\d+:[a-z]+$")],
+        states={EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, receive_edit)]},
+        fallbacks=[CommandHandler("cancel", cancel_edit)],
+        allow_reentry=True,
+    ))
     app.add_handler(CommandHandler("vstrechi", vstrechi))
     app.add_handler(CommandHandler("today", today))
     app.add_handler(CommandHandler("mine", mine))
