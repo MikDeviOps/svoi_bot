@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Any
+from typing import Protocol
 
 from app.db import Event
 from app.errors import Forbidden
@@ -28,10 +28,24 @@ class BotProtocol(Protocol):
 
 
 async def is_source_chat_member(bot: BotProtocol, chat_id: int, user_id: int) -> bool:
+    """True, если пользователь — член чата.
+
+    Считаем членом при статусах ``creator``/``administrator``/``member``,
+    а также ``restricted`` с ``is_member=True``.
+
+    ``bot.get_chat_member`` может:
+    - вернуть ``None`` (фейки в тестах);
+    - кинуть исключение (пользователя нет в чате, бот не в чате, сеть).
+    В обоих случаях возвращаем ``False``.
+    """
     try:
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
     except Exception:
         return False
+
+    if member is None:
+        return False
+
     status = getattr(member.status, "value", member.status)
     if status in {"creator", "administrator", "member"}:
         return True
@@ -69,5 +83,6 @@ async def can_access_event(
 
 
 def ensure_owner(event: Event, actor_id: int) -> None:
+    """Кинуть ``Forbidden``, если ``actor_id`` — не владелец встречи."""
     if event.owner_id != actor_id:
         raise Forbidden("Действие доступно только организатору встречи.")
