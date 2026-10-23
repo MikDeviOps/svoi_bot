@@ -166,6 +166,8 @@ async def make_event(
         source_chat_id: int | None = None,
         source_chat_title: str = "Test Group",
         starts_in_days: int = 1,
+        address: str = "ул. Тестовая, 1",
+        conditions: str = "бесплатно",
     ) -> Event:
         # FK: events.source_chat_id → known_groups.chat_id
         if source_chat_id is not None:
@@ -181,8 +183,8 @@ async def make_event(
             category=category,
             starts_at=datetime.now(get_settings().timezone)
             + timedelta(days=starts_in_days),
-            address="ул. Тестовая, 1",
-            conditions="бесплатно",
+            address=address,
+            conditions=conditions,
             capacity=capacity,
             visibility=visibility,
             source_chat_id=source_chat_id,
