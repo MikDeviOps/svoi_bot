@@ -30,6 +30,8 @@ COPY --chown=app:app app/ ./app/
 COPY --chown=app:app alembic/ ./alembic/
 COPY --chown=app:app alembic.ini ./
 
+COPY --chown=app:app tests/ ./tests/
+COPY --chown=app:app pyproject.toml ./
 USER app
 
 # По умолчанию — бот. Migrator переопределяет command в compose.

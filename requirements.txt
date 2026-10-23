@@ -4,3 +4,8 @@ asyncpg>=0.29,<1
 alembic>=1.13,<2
 pydantic-settings>=2.4,<3
 python-dotenv>=1.0,<2
+structlog>=24.1,<25
+
+# --- dev / test ---
+pytest>=8.2,<9
+pytest-asyncio>=0.23,<1

@@ -13,7 +13,6 @@ __pycache__/
 !.env.example
 README.md
 docs/
-tests/
 docker-compose*.yml
 Dockerfile
 .dockerignore
