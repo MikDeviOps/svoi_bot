@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.config import get_settings
+from app.db import Event, User
 from app.errors import CapacityFull, Conflict, Forbidden, NotFound, PastEvent
 from app.services.signups import SignupService
+
+
+# ---------------------------------------------------------------------------
+# Базовые сценарии
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -70,46 +80,89 @@ async def test_join_not_found(session, make_user):
         await svc.join(9999, guest)
 
 
+# ---------------------------------------------------------------------------
+# Гонка
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_join_race_capacity_one(session, make_user, make_event, db_engine):
+async def test_join_race_capacity_one(make_user, make_event, db_engine, session):
     """Два параллельных join на capacity=1: ровно один успех.
 
-    Внимание: это тест на ``SELECT ... FOR UPDATE``. При rollback
-    транзакции (``session`` fixture) параллельные сессии не увидят
-    незакоммиченные данные — поэтому гонку проверяем честно:
-    два коммита через отдельные соединения.
+    ``session``-фикстура делает rollback после теста — значит, нельзя
+    опираться на её данные в параллельных сессиях. Поэтому создаём данные
+    в **отдельной** сессии из ``db_engine`` с явным ``commit()``.
+
+    ``SELECT ... FOR UPDATE`` в ``SignupService.join`` сериализует
+    параллельные join: одна транзакция ждёт другую, вторая видит уже
+    заполненный capacity и падает в ``CapacityFull``.
     """
-    owner = await make_user(tg_id=1)
-    u1 = await make_user(tg_id=2)
-    u2 = await make_user(tg_id=3)
-    event = await make_event(owner.tg_id, capacity=1)
-
-    # Commit, чтобы параллельные сессии видели event
-    await session.commit()
-
-    from sqlalchemy.ext.asyncio import async_sessionmaker
-
     factory = async_sessionmaker(bind=db_engine, expire_on_commit=False)
 
+    # --- setup: отдельная сессия + commit ---
+    async with factory() as setup_session:
+        owner = User(tg_id=101, username="owner", full_name="Owner")
+        u1 = User(tg_id=102, username="u1", full_name="User 1")
+        u2 = User(tg_id=103, username="u2", full_name="User 2")
+        setup_session.add_all([owner, u1, u2])
+        await setup_session.flush()
+
+        event = Event(
+            owner_id=owner.tg_id,
+            title="Race Event",
+            description="",
+            category="games",
+            starts_at=datetime.now(get_settings().timezone) + timedelta(days=1),
+            address="ул. Тестовая, 1",
+            conditions="бесплатно",
+            capacity=1,
+            visibility="public",
+            source_chat_id=None,
+            source_chat_title="",
+        )
+        setup_session.add(event)
+        await setup_session.commit()
+        event_id = event.id
+        u1_id = u1.tg_id
+        u2_id = u2.tg_id
+
+    # --- race: два параллельных join через отдельные сессии ---
     async def attempt(user_id: int) -> bool:
         async with factory() as s:
             svc = SignupService(s)
             try:
-                result = await svc.join(event.id, type("U", (), {"tg_id": user_id, "username": "", "full_name": "x"})())
+                result = await svc.join(
+                    event_id,
+                    type("U", (), {
+                        "tg_id": user_id, "username": "", "full_name": "x",
+                    })(),
+                )
                 await s.commit()
                 return result.joined
             except CapacityFull:
                 await s.rollback()
                 return False
 
-    results = await asyncio.gather(attempt(u1.tg_id), attempt(u2.tg_id))
-    assert sorted(results) == [False, True], "ровно один успех"
+    try:
+        results = await asyncio.gather(attempt(u1_id), attempt(u2_id))
+        assert sorted(results) == [False, True], "ровно один успех"
+    finally:
+        # --- cleanup: чистим всё, что создали ---
+        async with db_engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM signups WHERE event_id = :eid"), {"eid": event_id}
+            )
+            await conn.execute(
+                text("DELETE FROM events WHERE id = :eid"), {"eid": event_id}
+            )
+            await conn.execute(
+                text("DELETE FROM users WHERE tg_id IN (101, 102, 103)")
+            )
 
-    # cleanup
-    await session.execute(
-        __import__("sqlalchemy").text("DELETE FROM signups")
-    )
-    await session.commit()
+
+# ---------------------------------------------------------------------------
+# Cancel
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -135,6 +188,11 @@ async def test_cancel_not_signed(session, make_user, make_event):
     svc = SignupService(session)
     with pytest.raises(Conflict):
         await svc.cancel(event.id, guest.tg_id)
+
+
+# ---------------------------------------------------------------------------
+# Kick
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

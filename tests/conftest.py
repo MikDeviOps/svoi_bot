@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings, get_settings
-from app.db import Base, Event, Signup, User
+from app.db import Base, Event, KnownGroup, Signup, User
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,11 @@ async def make_user(
 async def make_event(
     session: AsyncSession,
 ) -> Callable[..., Awaitable[Event]]:
-    """Фабрика встреч. По умолчанию — public, через 1 день."""
+    """Фабрика встреч.
+
+    Если ``source_chat_id`` задан, создаёт соответствующую ``KnownGroup``
+    (иначе нарушится FK ``events.source_chat_id → known_groups.chat_id``).
+    """
 
     async def _make(
         owner_id: int,
@@ -160,9 +164,16 @@ async def make_event(
         capacity: int = 10,
         visibility: str = "public",
         source_chat_id: int | None = None,
-        source_chat_title: str = "",
+        source_chat_title: str = "Test Group",
         starts_in_days: int = 1,
     ) -> Event:
+        # FK: events.source_chat_id → known_groups.chat_id
+        if source_chat_id is not None:
+            existing = await session.get(KnownGroup, source_chat_id)
+            if existing is None:
+                session.add(KnownGroup(chat_id=source_chat_id, title=source_chat_title))
+                await session.flush()
+
         event = Event(
             owner_id=owner_id,
             title=title,
