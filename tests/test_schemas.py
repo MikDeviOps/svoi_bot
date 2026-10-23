@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from datetime import date as dt_date, time as dt_time, timedelta
 
 import pytest
 
-from app.config import get_settings
 from app.errors import ValidationError
 from app.schemas import EventDraft
 
@@ -101,28 +100,28 @@ def test_capacity_ok():
 
 
 def test_date_time_in_past():
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = dt_date.today() - timedelta(days=1)
     with pytest.raises(ValidationError, match="в будущем"):
-        EventDraft(date=yesterday, time=time(19, 0))
+        EventDraft(event_date=yesterday, event_time=dt_time(19, 0))
 
 
 def test_date_too_far():
-    far = date.today() + timedelta(days=400)
+    far = dt_date.today() + timedelta(days=400)
     with pytest.raises(ValidationError, match="не позже"):
-        EventDraft(date=far, time=time(19, 0))
+        EventDraft(event_date=far, event_time=dt_time(19, 0))
 
 
 def test_date_time_ok():
-    tomorrow = date.today() + timedelta(days=1)
-    d = EventDraft(date=tomorrow, time=time(19, 0))
-    assert d.date == tomorrow and d.time == time(19, 0)
+    tomorrow = dt_date.today() + timedelta(days=1)
+    d = EventDraft(event_date=tomorrow, event_time=dt_time(19, 0))
+    assert d.event_date == tomorrow and d.event_time == dt_time(19, 0)
 
 
 # --- visibility ---
 
 
 def test_visibility_invalid():
-    with pytest.raises(Exception):  # pydantic ValidationError от Literal
+    with pytest.raises(Exception):
         EventDraft(visibility="everyone")
 
 

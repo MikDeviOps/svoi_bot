@@ -1,18 +1,11 @@
-"""Pydantic-схемы: черновик FSM, view-модели, результаты сервисов.
+"""Pydantic-схемы: черновик FSM, view-модели, результаты сервисов."""
 
-``EventDraft`` — то, что заполняется по шагам в FSM. Валидаторы повторяют
-CHECK-constraint'ы из БД, но с ``user_message`` (понятным текстом), чтобы
-``ErrorMiddleware`` мог показать причину.
+from __future__ import annotations          # ← ВАЖНО: отложенные аннотации
 
-Схемы не знают ни про ORM, ни про aiogram.
-"""
-
-from __future__ import annotations
-
-from datetime import date, datetime, time
+from datetime import date as dt_date, datetime as dt_datetime, time as dt_time
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.config import get_settings
 from app.errors import ValidationError
@@ -20,15 +13,8 @@ from app.errors import ValidationError
 Visibility = Literal["public", "chat"]
 
 CATEGORIES: tuple[str, ...] = (
-    "games",
-    "bars",
-    "restaurants",
-    "clubs",
-    "concerts",
-    "outdoors",
-    "houses",
-    "parties",
-    "other",
+    "games", "bars", "restaurants", "clubs", "concerts",
+    "outdoors", "houses", "parties", "other",
 )
 Category = Literal[
     "games", "bars", "restaurants", "clubs", "concerts",
@@ -36,24 +22,18 @@ Category = Literal[
 ]
 
 
-# ---------------------------------------------------------------------------
-# Черновик встречи (FSM)
-# ---------------------------------------------------------------------------
-
-
 class EventDraft(BaseModel):
-    """Черновик встречи, который заполняется по шагам в FSM создания.
+    """Черновик встречи, заполняется по шагам в FSM.
 
-    Поля становятся обязательными по мере прохождения шагов; здесь — общий
-    контейнер с валидаторами. ``None`` допустим для полей, которые ещё
-    не заполнены, — это позволяет держать один объект на всё FSM.
+    Поля ``event_date``/``event_time`` (а не ``date``/``time``) — чтобы
+    не конфликтовать с именами типов из ``datetime``.
     """
 
     title: str | None = None
     description: str = ""
     category: Category | None = None
-    date: date | None = None
-    time: time | None = None
+    event_date: dt_date | None = None
+    event_time: dt_time | None = None
     address: str | None = None
     conditions: str | None = None
     capacity: int | None = None
@@ -135,23 +115,20 @@ class EventDraft(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _starts_at_in_future(self) -> "EventDraft":
-        if self.date is None or self.time is None:
+    def _starts_at_in_future(self) -> EventDraft:
+        if self.event_date is None or self.event_time is None:
             return self
         s = get_settings()
-        starts_at = datetime.combine(self.date, self.time).replace(tzinfo=s.timezone)
-        if starts_at <= datetime.now(s.timezone):
+        starts_at = dt_datetime.combine(self.event_date, self.event_time).replace(
+            tzinfo=s.timezone
+        )
+        if starts_at <= dt_datetime.now(s.timezone):
             raise ValidationError("Встреча должна быть в будущем.")
-        if (self.date - datetime.now(s.timezone).date()).days > s.event_horizon_days:
+        if (self.event_date - dt_datetime.now(s.timezone).date()).days > s.event_horizon_days:
             raise ValidationError(
                 f"Дата должна быть не позже чем через {s.event_horizon_days} дней."
             )
         return self
-
-
-# ---------------------------------------------------------------------------
-# View-модели и результаты сервисов
-# ---------------------------------------------------------------------------
 
 
 class EventView(BaseModel):
@@ -161,7 +138,7 @@ class EventView(BaseModel):
     title: str
     description: str
     category: Category
-    starts_at: datetime
+    starts_at: dt_datetime
     address: str
     conditions: str
     capacity: int
@@ -170,7 +147,7 @@ class EventView(BaseModel):
     source_chat_id: int | None
     source_chat_title: str
     owner_id: int
-    owner_display: str  # "Имя (@username)" или "Имя"
+    owner_display: str
 
     @property
     def available(self) -> int:
@@ -178,34 +155,21 @@ class EventView(BaseModel):
 
 
 class JoinResult(BaseModel):
-    """Результат SignupService.join()."""
-
     joined: bool
-    reason: str = ""       # user-safe текст, если joined=False
+    reason: str = ""
     available: int = 0
 
 
 class CancelResult(BaseModel):
-    """Результат SignupService.cancel()."""
-
     cancelled: bool
     reason: str = ""
     available: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Афиша
-# ---------------------------------------------------------------------------
-
-
 class DatePage(BaseModel):
-    """Страница «даты с встречами» для scope."""
-
-    dates: list[date]
+    dates: list[dt_date]
 
 
 class CategoryPage(BaseModel):
-    """Страница «категории на дату» для scope."""
-
-    date: date
-    categories: dict[str, int]  # {slug: count}
+    date: dt_date
+    categories: dict[str, int]
