@@ -12,6 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: svoi
+          POSTGRES_PASSWORD: svoi
+          POSTGRES_DB: svoi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U svoi -d svoi_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,4 +43,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://svoi:svoi@localhost:5432/svoi_test
+          DATABASE_URL_TEST: postgresql+asyncpg://svoi:svoi@localhost:5432/svoi_test
         run: pytest tests/ -v
