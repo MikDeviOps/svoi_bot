@@ -1,6 +1,23 @@
-"""Pydantic-схемы: черновик FSM, view-модели, результаты сервисов."""
+"""Pydantic-схемы: черновик FSM, view-модели, результаты сервисов.
 
-from __future__ import annotations          # ← ВАЖНО: отложенные аннотации
+``EventDraft`` — то, что заполняется по шагам в FSM. Валидаторы повторяют
+CHECK-constraint'ы из БД, но с ``user_message`` (понятным текстом), чтобы
+``ErrorMiddleware`` мог показать причину.
+
+Схемы не знают ни про ORM, ни про aiogram.
+
+Важно:
+- ``from __future__ import annotations`` — отложенные аннотации, чтобы
+  pydantic не спотыкался о конфликт имён (``date``/``time``).
+- ``Category = str`` (не ``Literal``) — валидация в ``@field_validator``,
+  чтобы кидать **наш** ``app.errors.ValidationError``, а не
+  ``pydantic_core.ValidationError``. ``ErrorMiddleware`` ловит только
+  ``DomainError``.
+- Поля ``event_date``/``event_time`` (не ``date``/``time``) — чтобы не
+  конфликтовать с именами типов из ``datetime``.
+"""
+
+from __future__ import annotations
 
 from datetime import date as dt_date, datetime as dt_datetime, time as dt_time
 from typing import Literal
@@ -13,20 +30,32 @@ from app.errors import ValidationError
 Visibility = Literal["public", "chat"]
 
 CATEGORIES: tuple[str, ...] = (
-    "games", "bars", "restaurants", "clubs", "concerts",
-    "outdoors", "houses", "parties", "other",
+    "games",
+    "bars",
+    "restaurants",
+    "clubs",
+    "concerts",
+    "outdoors",
+    "houses",
+    "parties",
+    "other",
 )
-Category = Literal[
-    "games", "bars", "restaurants", "clubs", "concerts",
-    "outdoors", "houses", "parties", "other",
-]
+# Не Literal: автовалидация Literal кидает pydantic.ValidationError до
+# @field_validator — а нам нужен app.errors.ValidationError с user_message.
+Category = str
+
+
+# ---------------------------------------------------------------------------
+# Черновик встречи (FSM)
+# ---------------------------------------------------------------------------
 
 
 class EventDraft(BaseModel):
-    """Черновик встречи, заполняется по шагам в FSM.
+    """Черновик встречи, заполняется по шагам в FSM создания.
 
-    Поля ``event_date``/``event_time`` (а не ``date``/``time``) — чтобы
-    не конфликтовать с именами типов из ``datetime``.
+    Поля становятся обязательными по мере прохождения шагов; здесь — общий
+    контейнер с валидаторами. ``None`` допустим для полей, которые ещё
+    не заполнены, — это позволяет держать один объект на всё FSM.
     """
 
     title: str | None = None
@@ -73,7 +102,7 @@ class EventDraft(BaseModel):
         if v is None:
             return v
         if v not in CATEGORIES:
-            raise ValidationError("Такой категории нет.")
+            raise ValidationError("Такой категории нет. Выберите категорию ещё раз.")
         return v
 
     @field_validator("address")
@@ -131,6 +160,11 @@ class EventDraft(BaseModel):
         return self
 
 
+# ---------------------------------------------------------------------------
+# View-модели и результаты сервисов
+# ---------------------------------------------------------------------------
+
+
 class EventView(BaseModel):
     """Готовая к показу встреча (карточка)."""
 
@@ -155,21 +189,34 @@ class EventView(BaseModel):
 
 
 class JoinResult(BaseModel):
+    """Результат SignupService.join()."""
+
     joined: bool
     reason: str = ""
     available: int = 0
 
 
 class CancelResult(BaseModel):
+    """Результат SignupService.cancel()."""
+
     cancelled: bool
     reason: str = ""
     available: int = 0
 
 
+# ---------------------------------------------------------------------------
+# Афиша
+# ---------------------------------------------------------------------------
+
+
 class DatePage(BaseModel):
+    """Страница «даты с встречами» для scope."""
+
     dates: list[dt_date]
 
 
 class CategoryPage(BaseModel):
+    """Страница «категории на дату» для scope."""
+
     date: dt_date
     categories: dict[str, int]
