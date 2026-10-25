@@ -54,6 +54,23 @@ async def is_source_chat_member(bot: BotProtocol, chat_id: int, user_id: int) ->
     return False
 
 
+async def is_group_admin(bot: BotProtocol, chat_id: int, user_id: int) -> bool:
+    """True, если ``user_id`` — админ/создатель ``chat_id``.
+
+    Используется при создании встречи от имени группы (``/create``).
+    """
+    try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+    except Exception:
+        return False
+
+    if member is None:
+        return False
+
+    status = getattr(member.status, "value", member.status)
+    return status in {"creator", "administrator", "owner"}
+
+
 async def can_access_event(
     event: Event,
     *,
