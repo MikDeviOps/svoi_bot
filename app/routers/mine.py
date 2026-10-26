@@ -1,9 +1,9 @@
 """/mine + редактирование + управление участниками + удаление.
 
 UX:
-- «Не на своё» (удалить, редактировать, управлять) → `show_alert=True`,
-  без сообщения в чат.
-- `edit_text` для подтверждений вместо `answer` (одно сообщение).
+- Всё, что «не на своё» (edit, delete, manage, kick) → alert
+  «Это не ваша встреча».
+- edit_text вместо answer (без спама).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ router = Router(name="mine")
 
 
 # ---------------------------------------------------------------------------
-# /mine + текстовый триггер
+# /mine
 # ---------------------------------------------------------------------------
 
 
@@ -78,9 +78,7 @@ async def cb_delete_ask(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Встреча не найдена.", show_alert=True)
         return
     if event.owner_id != query.from_user.id:
-        await query.answer(
-            "Удалить встречу может только её создатель.", show_alert=True
-        )
+        await query.answer("Это не ваша встреча.", show_alert=True)
         return
     await query.answer()
     await query.message.edit_text(
@@ -118,14 +116,13 @@ async def cb_manage_people(query: CallbackQuery, session: AsyncSession) -> None:
     event_id = int(query.data.split(":", 1)[1])
     event = await session.get(Event, event_id)
     if event is None or event.owner_id != query.from_user.id:
-        await query.answer("Вы не организатор.", show_alert=True)
+        await query.answer("Это не ваша встреча.", show_alert=True)
         return
 
     service = SignupService(session)
     people = await service.list_participants(event_id)
     if not people:
-        await query.answer()
-        await query.message.answer("Пока никто не записался.")
+        await query.answer("Пока никто не записался.", show_alert=True)
         return
 
     rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in people]
@@ -144,7 +141,7 @@ async def cb_kick_ask(query: CallbackQuery, session: AsyncSession) -> None:
     event_id, user_id = int(parts[1]), int(parts[2])
     event = await session.get(Event, event_id)
     if event is None or event.owner_id != query.from_user.id:
-        await query.answer("Вы не организатор.", show_alert=True)
+        await query.answer("Это не ваша встреча.", show_alert=True)
         return
     await query.answer()
     await query.message.edit_text(
@@ -196,19 +193,27 @@ async def cb_edit_menu(query: CallbackQuery, session: AsyncSession) -> None:
     event_id = int(query.data.split(":", 1)[1])
     event = await session.get(Event, event_id)
     if event is None or event.owner_id != query.from_user.id:
-        await query.answer("Вы не организатор.", show_alert=True)
+        await query.answer("Это не ваша встреча.", show_alert=True)
         return
     await query.answer()
-    await query.message.edit_text("Что изменить?", reply_markup=edit_menu_kb(event_id))
+    await query.message.edit_text(
+        "Что изменить?", reply_markup=edit_menu_kb(event_id)
+    )
 
 
 @router.callback_query(F.data.startswith("editfield:"))
-async def cb_edit_field(query: CallbackQuery, state: FSMContext) -> None:
+async def cb_edit_field(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     parts = query.data.split(":")
     if len(parts) != 3:
         await query.answer("Неверный запрос.", show_alert=True)
         return
     event_id, field = int(parts[1]), parts[2]
+    # Проверка «не на своё»
+    event = await session.get(Event, event_id)
+    if event is None or event.owner_id != query.from_user.id:
+        await query.answer("Это не ваша встреча.", show_alert=True)
+        return
+
     await state.update_data(edit_event_id=event_id, edit_field=field)
     await state.set_state(EditEvent.field_value)
     await query.answer()
