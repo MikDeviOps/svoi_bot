@@ -72,7 +72,14 @@ async def create_command(message: Message, session: AsyncSession, state: FSMCont
         await message.answer("Создавать встречи от группы могут только её администраторы.")
         return
 
-    session.add(KnownGroup(chat_id=message.chat.id, title=message.chat.title or "Группа"))
+    # Регистрация группы: если есть — обновляем title, иначе insert.
+    # Иначе при повторном /create — UniqueViolationError (pk_known_groups).
+    existing = await session.get(KnownGroup, message.chat.id)
+    title = message.chat.title or "Группа"
+    if existing is None:
+        session.add(KnownGroup(chat_id=message.chat.id, title=title))
+    else:
+        existing.title = title
     await session.flush()
 
     me = await message.bot.get_me()

@@ -5,6 +5,7 @@ UX:
 - detail / participants → edit_text (не answer).
 - _safe_edit — обходит TelegramBadRequest "message is not modified".
 - participants — с кнопкой «← Назад» (detail).
+- detail / после join/cancel — show_detail=False (карточка уже подробная).
 """
 
 from __future__ import annotations
@@ -65,14 +66,15 @@ async def send_event_card(
         owner_username=owner.username if owner else "",
         private_details=private_details,
     )
-    kb = event_kb(event, booked, viewer_id=viewer_id)
+    # Афиша: show_detail=True (по умолчанию) — есть «Подробнее»
+    kb = event_kb(event, booked, viewer_id=viewer_id, show_detail=True)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await _save_event_message(session, sent, event.id)
     return sent
 
 
 # ---------------------------------------------------------------------------
-# detail
+# detail — edit_text + show_detail=False (уже подробная)
 # ---------------------------------------------------------------------------
 
 
@@ -110,7 +112,8 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
         owner_username=owner.username if owner else "",
         private_details=True,
     )
-    kb = event_kb(event, booked, viewer_id=query.from_user.id)
+    # show_detail=False — «Подробнее» больше не нужно
+    kb = event_kb(event, booked, viewer_id=query.from_user.id, show_detail=False)
 
     await query.answer()
     await _safe_edit(query.message, text, kb)
@@ -175,7 +178,8 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
             owner_username=owner.username if owner else "",
             private_details=True,
         )
-        kb = event_kb(event, booked, viewer_id=query.from_user.id)
+        # show_detail=False — после join карточка уже подробная
+        kb = event_kb(event, booked, viewer_id=query.from_user.id, show_detail=False)
         await _safe_edit(query.message, text, kb)
     except Exception:
         pass
@@ -222,7 +226,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
             owner_username=owner.username if owner else "",
             private_details=True,
         )
-        kb = event_kb(event, booked, viewer_id=query.from_user.id)
+        kb = event_kb(event, booked, viewer_id=query.from_user.id, show_detail=False)
         await _safe_edit(query.message, text, kb)
     except Exception:
         pass
