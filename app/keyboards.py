@@ -1,6 +1,7 @@
 """Фабрики клавиатур. Только InlineKeyboardMarkup/ReplyKeyboardMarkup.
 
 Не знают про БД и сервисы. Принимают id/флаги/dict.
+CATEGORY_LABELS — из app/labels.py (разрыв circular import).
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ from aiogram.types import (
 )
 
 from app.db import Event
-from app.services.notifications import CATEGORY_LABELS
+from app.labels import CATEGORY_LABELS
 
 
 # ---------------------------------------------------------------------------
-# Главное меню (приватный чат)
+# Главное меню
 # ---------------------------------------------------------------------------
 
 

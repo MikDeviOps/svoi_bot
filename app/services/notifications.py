@@ -1,10 +1,8 @@
 """Рендер карточек и refresh сообщений в чатах.
 
-- `render_card` — с escape() на всех пользовательских полях.
-- `enqueue_refresh` — прямой вызов (потом Redis).
-- `_refresh` — под per-event asyncio.Lock.
-  Ошибки Telegram (`message is not modified`, `message to edit not found`)
-  — игнорируются (карточка уже актуальна / удалена).
+- render_card — escape() на всех пользовательских полях.
+- CATEGORY_LABELS — из app/labels.py (разрыв circular import).
+- _refresh — try/except TelegramBadRequest (message is not modified — skip).
 """
 
 from __future__ import annotations
@@ -20,24 +18,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Event, EventMessage, User
+from app.labels import CATEGORY_LABELS
 from app.services.events import _count_booked
 
 logger = structlog.get_logger(__name__)
 
-
-CATEGORY_LABELS: dict[str, str] = {
-    "games": "🎲 Игры",
-    "bars": "🍺 Бары",
-    "restaurants": "🍽️ Рестораны",
-    "clubs": "💃 Клубы",
-    "concerts": "🎤 Концерты",
-    "outdoors": "🌳 Пикники и природа",
-    "houses": "🏡 Отдых в доме",
-    "parties": "🎉 Вечеринки",
-    "other": "🎭 Другое",
-}
-
-# Per-event lock: два параллельных refresh на одно event_id ждут друг друга.
 _REFRESH_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
@@ -100,7 +85,6 @@ def render_summary(event: Event, booked: int) -> str:
 
 
 async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
-    """Обновить все известные карточки события. Под per-event lock."""
     lock = _REFRESH_LOCKS[event_id]
     async with lock:
         event = await session.get(Event, event_id)
@@ -113,8 +97,7 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
         owner_username = owner.username if owner else ""
 
         text = render_card(
-            event,
-            booked,
+            event, booked,
             owner_name=owner_name,
             owner_username=owner_username,
             private_details=True,
@@ -135,9 +118,9 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
             except TelegramBadRequest as exc:
                 err = str(exc)
                 if "message is not modified" in err:
-                    continue   # уже актуально — молча
+                    continue
                 if "message to edit not found" in err:
-                    continue   # карточка удалена — молча
+                    continue
                 logger.info(
                     "refresh_failed",
                     event_id=event_id,
@@ -148,8 +131,4 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
 
 
 async def enqueue_refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
-    """Точка входа для refresh. Сейчас — прямой вызов.
-
-    Позже — заменить на redis.xadd без изменения сигнатуры.
-    """
     await _refresh(event_id, session, bot)
