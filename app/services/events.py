@@ -1,6 +1,6 @@
 """EventService — бизнес-правила для встреч.
 
-Не знает про aiogram и про keyboards. Работает через AsyncSession.
+Не знает про aiogram, keyboards, notifications. Работает через AsyncSession.
 Все ошибки — доменные (app.errors).
 """
 
