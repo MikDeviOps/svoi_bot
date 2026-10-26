@@ -2,7 +2,7 @@
 
 - render_card — escape() на всех пользовательских полях.
 - CATEGORY_LABELS — из app/labels.py (разрыв circular import).
-- _refresh — try/except TelegramBadRequest (message is not modified — skip).
+- _refresh — try/except TelegramBadRequest (skip 'message is not modified').
 """
 
 from __future__ import annotations

@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import Event, EventMessage, User
 from app.errors import CapacityFull, Conflict, DomainError, PastEvent
 from app.keyboards import event_kb, participants_kb
-from app.services.events import _count_booked          # ← добавить
+from app.services.events import _count_booked
 from app.services.notifications import enqueue_refresh, render_card
 from app.services.permissions import can_access_event
 from app.services.signups import SignupService
