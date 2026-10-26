@@ -4,7 +4,7 @@
 - ``UserUpsertMiddleware`` — атомарный upsert ``users`` через
   ``INSERT ... ON CONFLICT`` (без race condition).
 - ``ErrorMiddleware`` — ``DomainError`` → user-safe текст; неожиданные —
-  лог + общее сообщение.
+  лог + общее сообщение. ``_reply`` — с try/except (не падает на flood).
 """
 
 from __future__ import annotations
@@ -60,8 +60,7 @@ class UserUpsertMiddleware(BaseMiddleware):
 
     Использует ``INSERT ... ON CONFLICT (tg_id) DO UPDATE`` — **атомарно**.
     Два параллельных update от одного ``tg_id`` не падают в
-    ``UniqueViolationError`` (race condition, который был при
-    ``session.get`` + ``session.add``).
+    ``UniqueViolationError``.
 
     Кладёт ORM-объект ``User`` в ``data["user"]``.
     """
@@ -104,6 +103,9 @@ class ErrorMiddleware(BaseMiddleware):
     """Ловит ``DomainError`` → ``answer(user_message)``.
 
     Неожиданные исключения — логирует и шлёт общее сообщение.
+    ``_reply`` — с try/except: flood или любые ошибки ответа не валят
+    всё приложение (иначе ``ErrorMiddleware`` → ``_reply`` → ошибка →
+    ``ErrorMiddleware`` ...).
     """
 
     async def __call__(
@@ -143,5 +145,9 @@ class ErrorMiddleware(BaseMiddleware):
             target = event.message
         else:
             target = None
+
         if target is not None:
-            await target.answer(text)
+            try:
+                await target.answer(text)
+            except Exception as exc:
+                logger.warning("reply_failed", error=str(exc))

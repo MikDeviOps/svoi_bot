@@ -1,11 +1,11 @@
 """Рендер карточек и refresh сообщений в чатах.
 
 - render_card — escape() на всех пользовательских полях.
-- CATEGORY_LABELS — из app/labels.py (разрыв circular import).
-- _refresh — try/except TelegramBadRequest (skip 'message is not modified').
-- enqueue_refresh — с ПЕРЕДАННОЙ сессией (для хендлеров, `await`).
-- enqueue_refresh_safe — с НОВОЙ сессией из async_session_factory
-  (для фоновых asyncio.create_task, сессия хендлера закроется после return).
+- CATEGORY_LABELS — из app/labels.py.
+- _refresh — try/except: skip 'message is not modified', TelegramRetryAfter
+  → sleep(retry_after) + продолжение, throttle 0.3 сек между карточками.
+- enqueue_refresh — с ПЕРЕДАННОЙ сессией (await в хендлере).
+- enqueue_refresh_safe — с НОВОЙ сессией (для asyncio.create_task).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from html import escape
 
 import structlog
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,8 @@ from app.services.events import _count_booked
 logger = structlog.get_logger(__name__)
 
 _REFRESH_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+_THROTTLE_SECONDS = 0.3  # между edit_message_text
 
 
 def _format_datetime(event: Event) -> str:
@@ -132,20 +134,34 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
                     message_id=msg.message_id,
                     error=err,
                 )
+            except TelegramRetryAfter as exc:
+                logger.info(
+                    "refresh_flood",
+                    event_id=event_id,
+                    chat_id=msg.chat_id,
+                    retry_after=exc.retry_after,
+                )
+                await asyncio.sleep(exc.retry_after)
+                # пробуем ещё раз
+                try:
+                    await bot.edit_message_text(
+                        chat_id=msg.chat_id,
+                        message_id=msg.message_id,
+                        text=text,
+                        parse_mode="HTML",
+                    )
+                except Exception as exc2:
+                    logger.info("refresh_failed", event_id=event_id, error=str(exc2))
+
+            await asyncio.sleep(_THROTTLE_SECONDS)
 
 
 async def enqueue_refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
-    """Refresh с ПЕРЕДАННОЙ сессией (синхронно, для хендлеров).
-
-    Использовать в хендлере с `await` — сессия жива до конца хендлера.
-    """
+    """Refresh с переданной сессией (await в хендлере)."""
     await _refresh(event_id, session, bot)
 
 
 async def enqueue_refresh_safe(event_id: int, bot: Bot) -> None:
-    """Refresh с НОВОЙ сессией (для фоновых `asyncio.create_task`).
-
-    Не использует переданную сессию (она закроется после `return` из хендлера).
-    """
+    """Refresh с новой сессией (для фоновых asyncio.create_task)."""
     async with async_session_factory() as session:
         await _refresh(event_id, session, bot)
