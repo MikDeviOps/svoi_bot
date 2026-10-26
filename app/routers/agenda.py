@@ -1,7 +1,9 @@
 """Афиша встреч: /vstrechi, /today, scope, dates, categories, page.
 
-Inline-кнопки: выбор scope, даты, категории, пагинация.
-Карточки рендерятся в ``events.show_event_card``.
+UX:
+- `📅 Афиша встреч` (ReplyKeyboard) → `_show_scope`. Удаляет предыдущее
+  сообщение, чтобы не спамить (5 нажатий = 5 сообщений).
+- `scope`, `pickdate`, `category`, `page` → `edit_text` (одно сообщение).
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from datetime import date, datetime
 import structlog
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +22,6 @@ from app.services.agenda import AgendaService
 
 logger = structlog.get_logger(__name__)
 router = Router(name="agenda")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _scope_token(scope: tuple[str, int | None]) -> str:
@@ -44,30 +42,41 @@ def _scope_from_token(token: str) -> tuple[str, int | None] | None:
 
 
 # ---------------------------------------------------------------------------
-# /vstrechi, /today
+# /vstrechi, /today, текстовые триггеры
 # ---------------------------------------------------------------------------
 
 
 @router.message(Command("vstrechi"))
-async def vstrechi(message: Message) -> None:
-    await _show_scope(message)
+async def vstrechi(message: Message, state: FSMContext) -> None:
+    await _show_scope(message, state)
 
 
 @router.message(Command("today"))
-async def today(message: Message) -> None:
-    await _show_scope(message, forced_date=date.today())
+async def today(message: Message, state: FSMContext) -> None:
+    await _show_scope(message, state, forced_date=date.today())
 
 
 @router.message(F.text.casefold().in_({"встречи", "ближайшие встречи", "📅 афиша встреч"}))
-async def text_vstrechi(message: Message) -> None:
-    await _show_scope(message)
+async def text_vstrechi(message: Message, state: FSMContext) -> None:
+    await _show_scope(message, state)
 
 
-async def _show_scope(message: Message, forced_date: date | None = None) -> None:
-    """Показать выбор scope (для групп — и чат, и общая; для лички — только общая)."""
+async def _show_scope(
+    message: Message, state: FSMContext, forced_date: date | None = None
+) -> None:
+    """Показать выбор scope. Удаляет предыдущее сообщение с кнопками."""
+    data = await state.get_data()
+    prev_id = data.get("scope_message_id")
+    if prev_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prev_id)
+        except Exception:
+            pass   # сообщение уже удалено / старое — не падаем
+
     chat_id = message.chat.id if message.chat.type in {"group", "supergroup"} else None
     text = "Выберите афишу:" if forced_date is None else "Выберите афишу на сегодня:"
-    await message.answer(text, reply_markup=scope_menu(chat_id))
+    sent = await message.answer(text, reply_markup=scope_menu(chat_id))
+    await state.update_data(scope_message_id=sent.message_id)
 
 
 # ---------------------------------------------------------------------------
@@ -79,23 +88,23 @@ async def _show_scope(message: Message, forced_date: date | None = None) -> None
 async def cb_scope(query: CallbackQuery, session: AsyncSession) -> None:
     parts = query.data.split(":")
     if len(parts) < 2:
-        await query.answer("Не удалось открыть афишу.")
+        await query.answer("Не удалось открыть афишу.", show_alert=True)
         return
 
     if parts[1] == "chat":
         if len(parts) < 3:
-            await query.answer("Неверный scope.")
+            await query.answer("Неверный scope.", show_alert=True)
             return
         try:
             source_id = int(parts[2])
         except ValueError:
-            await query.answer("Неверный scope.")
+            await query.answer("Неверный scope.", show_alert=True)
             return
         scope: tuple[str, int | None] = ("chat", source_id)
     elif parts[1] == "public":
         scope = ("public", None)
     else:
-        await query.answer("Неверный scope.")
+        await query.answer("Неверный scope.", show_alert=True)
         return
 
     await query.answer()
@@ -118,18 +127,18 @@ async def cb_scope(query: CallbackQuery, session: AsyncSession) -> None:
 async def cb_pickdate(query: CallbackQuery, session: AsyncSession) -> None:
     parts = query.data.split(":")
     if len(parts) != 3:
-        await query.answer("Не удалось определить дату.")
+        await query.answer("Не удалось определить дату.", show_alert=True)
         return
 
     scope = _scope_from_token(parts[1])
     if scope is None:
-        await query.answer("Неверный scope.")
+        await query.answer("Неверный scope.", show_alert=True)
         return
 
     try:
         day = date.fromisoformat(parts[2])
     except ValueError:
-        await query.answer("Неверная дата.")
+        await query.answer("Неверная дата.", show_alert=True)
         return
 
     await query.answer()
@@ -149,22 +158,21 @@ async def cb_pickdate(query: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data.startswith("category:"))
 async def cb_category(query: CallbackQuery, session: AsyncSession) -> None:
-    # category:<token>:<date>:<slug>:<page>
     parts = query.data.split(":")
     if len(parts) != 5:
-        await query.answer("Не удалось открыть категорию.")
+        await query.answer("Не удалось открыть категорию.", show_alert=True)
         return
 
     scope = _scope_from_token(parts[1])
     if scope is None:
-        await query.answer("Неверный scope.")
+        await query.answer("Неверный scope.", show_alert=True)
         return
 
     try:
         day = date.fromisoformat(parts[2])
         page_num = int(parts[4])
     except ValueError:
-        await query.answer("Неверные параметры.")
+        await query.answer("Неверные параметры.", show_alert=True)
         return
 
     category = parts[3]
@@ -174,22 +182,21 @@ async def cb_category(query: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data.startswith("page:"))
 async def cb_page(query: CallbackQuery, session: AsyncSession) -> None:
-    # page:<token>:<date>:<slug>:<page>
     parts = query.data.split(":")
     if len(parts) != 5:
-        await query.answer("Не удалось открыть страницу.")
+        await query.answer("Не удалось открыть страницу.", show_alert=True)
         return
 
     scope = _scope_from_token(parts[1])
     if scope is None:
-        await query.answer("Неверный scope.")
+        await query.answer("Неверный scope.", show_alert=True)
         return
 
     try:
         day = date.fromisoformat(parts[2])
         page_num = int(parts[4])
     except ValueError:
-        await query.answer("Неверные параметры.")
+        await query.answer("Неверные параметры.", show_alert=True)
         return
 
     category = parts[3]
@@ -206,7 +213,7 @@ async def _show_event_page(
     page_num: int,
 ) -> None:
     """Показать карточки событий категории на странице ``page_num``."""
-    from app.routers.events import send_event_card  # локальный импорт — избегаем цикла
+    from app.routers.events import send_event_card
     from app.services.notifications import CATEGORY_LABELS
 
     service = AgendaService(session)
@@ -219,7 +226,6 @@ async def _show_event_page(
     for event in events:
         await send_event_card(message, session, event, private_details=True)
 
-    # Пагинация: если есть 10 — возможно, есть ещё
     token = _scope_token(scope)
     has_next = len(events) == 10
     kb = pagination_kb(token, day.isoformat(), category, page_num, has_next)
@@ -229,11 +235,3 @@ async def _show_event_page(
             f"страница {page_num + 1}:",
             reply_markup=kb,
         )
-
-
-# Legacy callback: scope-menu (если кто-то вызывает)
-@router.callback_query(F.data == "scope-menu")
-async def cb_scope_menu(query: CallbackQuery) -> None:
-    await query.answer()
-    chat_id = query.message.chat.id if query.message.chat.type in {"group", "supergroup"} else None
-    await query.message.answer("Выберите афишу:", reply_markup=scope_menu(chat_id))
