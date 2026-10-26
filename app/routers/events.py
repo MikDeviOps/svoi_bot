@@ -1,4 +1,11 @@
-"""Карточки событий и действия. UX: edit_text вместо answer, alerts."""
+"""Карточки событий и действия: join, cancel, participants, detail, full.
+
+UX:
+- join / cancel → alert + refresh карточки (edit_text).
+- detail / participants → edit_text (не answer).
+- _safe_edit — обходит TelegramBadRequest "message is not modified".
+- participants — с кнопкой «← Назад» (detail).
+"""
 
 from __future__ import annotations
 
@@ -6,12 +13,13 @@ from html import escape
 
 import structlog
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Event, EventMessage, User
 from app.errors import CapacityFull, Conflict, DomainError, PastEvent
-from app.keyboards import event_kb
+from app.keyboards import event_kb, participants_kb
 from app.services.events import _count_booked
 from app.services.notifications import enqueue_refresh, render_card
 from app.services.permissions import can_access_event
@@ -19,6 +27,15 @@ from app.services.signups import SignupService
 
 logger = structlog.get_logger(__name__)
 router = Router(name="events")
+
+
+async def _safe_edit(message: Message, text: str, kb=None) -> None:
+    try:
+        await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return
+        raise
 
 
 async def _save_event_message(
@@ -55,7 +72,7 @@ async def send_event_card(
 
 
 # ---------------------------------------------------------------------------
-# detail — edit_text (та же карточка → подробнее)
+# detail
 # ---------------------------------------------------------------------------
 
 
@@ -96,12 +113,11 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
     kb = event_kb(event, booked, viewer_id=query.from_user.id)
 
     await query.answer()
-    # edit_text — НЕ новое сообщение
-    await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await _safe_edit(query.message, text, kb)
 
 
 # ---------------------------------------------------------------------------
-# join / cancel / full — alert, без сообщений
+# join / cancel / full
 # ---------------------------------------------------------------------------
 
 
@@ -149,7 +165,7 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
         return
 
     await enqueue_refresh(event_id, session, query.bot)
-    # Обновляем карточку через edit_text
+
     try:
         booked = await _count_booked(session, event_id)
         owner = await session.get(User, event.owner_id)
@@ -160,9 +176,9 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
             private_details=True,
         )
         kb = event_kb(event, booked, viewer_id=query.from_user.id)
-        await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await _safe_edit(query.message, text, kb)
     except Exception:
-        pass   # не падаем, если карточка уже не та
+        pass
 
     await query.answer(
         f"✅ Вы записаны. Свободно мест: {result.available}.",
@@ -196,6 +212,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
         return
 
     await enqueue_refresh(event_id, session, query.bot)
+
     try:
         booked = await _count_booked(session, event_id)
         owner = await session.get(User, event.owner_id)
@@ -206,7 +223,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
             private_details=True,
         )
         kb = event_kb(event, booked, viewer_id=query.from_user.id)
-        await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await _safe_edit(query.message, text, kb)
     except Exception:
         pass
 
@@ -217,7 +234,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# participants — edit_text (карточка → участники)
+# participants — с кнопкой «← Назад»
 # ---------------------------------------------------------------------------
 
 
@@ -256,27 +273,20 @@ async def cb_participants(query: CallbackQuery, session: AsyncSession) -> None:
 
     if not participants:
         await query.answer()
-        await query.message.edit_text(f"{heading}\nПока никто не записался.")
+        await _safe_edit(
+            query.message,
+            f"{heading}\nПока никто не записался.",
+            participants_kb(event_id, []),
+        )
         return
 
-    names = [
-        (p.telegram_name or "Имя не указано").replace("\r", " ").replace("\n", " ")
-        for p in participants
-    ]
-
-    chunks = []
-    current = heading
-    for name in names:
-        line = f"\n• {escape(name)}"
-        if len(current) + len(line) > 3800:
-            chunks.append(current)
-            current = "👥 Участники (продолжение)"
-        current += line
-    chunks.append(current)
+    rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in participants]
+    names = "\n".join(f"• {escape(name)}" for _, name in rows)
+    text = f"{heading}\n{names}"
 
     await query.answer()
-    # edit_text — заменяет карточку на список участников (1 сообщение)
-    await query.message.edit_text(chunks[0], parse_mode="HTML")
-    # Остальные chunk — если больше 3800 символов, они редки
-    for chunk in chunks[1:]:
-        await query.message.answer(chunk, parse_mode="HTML")
+    await _safe_edit(
+        query.message,
+        text[:3800],
+        participants_kb(event_id, rows),
+    )
