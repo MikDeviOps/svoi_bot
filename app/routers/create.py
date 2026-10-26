@@ -3,6 +3,8 @@ address → conditions → capacity → visibility → group.
 
 Групповой ``/create`` → регистрация ``known_groups`` + ссылка в личку
 → deep-link ``create_<chat_id>`` → этот FSM.
+
+Текстовый триггер ``➕ Создать встречу`` (ReplyKeyboard) = ``/create``.
 """
 
 from __future__ import annotations
@@ -79,6 +81,12 @@ async def create_command(message: Message, session: AsyncSession, state: FSMCont
         "Группа зарегистрирована. Продолжите создание встречи в личке с ботом:",
         reply_markup=private_link_kb(link),
     )
+
+
+@router.message(F.text.in_({"➕ Создать встречу", "создать встречу"}), StateFilter(None))
+async def text_create(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    """Текстовый триггер ReplyKeyboard ``➕ Создать встречу`` = /create."""
+    await create_command(message, session=session, state=state)
 
 
 async def start_create_from_group(

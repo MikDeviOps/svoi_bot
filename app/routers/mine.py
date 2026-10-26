@@ -1,4 +1,7 @@
-"""/mine + редактирование + управление участниками + удаление."""
+"""/mine + редактирование + управление участниками + удаление.
+
+Текстовый триггер ``📋 Мои встречи`` (ReplyKeyboard) = /mine.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,7 @@ import structlog
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot_states import EditEvent
@@ -46,6 +49,12 @@ async def mine(message: Message, session: AsyncSession) -> None:
             f"{e.booked}/{e.capacity}",
             reply_markup=mine_kb(e.id),
         )
+
+
+@router.message(F.text.in_({"📋 Мои встречи"}))
+async def text_mine(message: Message, session: AsyncSession) -> None:
+    """Текстовый триггер ReplyKeyboard ``📋 Мои встречи`` = /mine."""
+    await mine(message, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -128,16 +137,10 @@ async def cb_kick_ask(query: CallbackQuery, session: AsyncSession) -> None:
     await query.answer()
     await query.message.answer(
         f"Удалить участника {user_id}?",
-        reply_markup=__import__("aiogram.types", fromlist=["InlineKeyboardMarkup"]).InlineKeyboardMarkup(
-            inline_keyboard=[[
-                __import__("aiogram.types", fromlist=["InlineKeyboardButton"]).InlineKeyboardButton(
-                    text="Да, удалить", callback_data=f"kickconfirm:{event_id}:{user_id}",
-                ),
-                __import__("aiogram.types", fromlist=["InlineKeyboardButton"]).InlineKeyboardButton(
-                    text="Нет", callback_data=f"kickcancel:{event_id}:{user_id}",
-                ),
-            ]]
-        ),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Да, удалить", callback_data=f"kickconfirm:{event_id}:{user_id}"),
+            InlineKeyboardButton(text="Нет", callback_data=f"kickcancel:{event_id}:{user_id}"),
+        ]]),
     )
 
 
