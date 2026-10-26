@@ -1,9 +1,8 @@
 """/mine + редактирование + управление участниками + удаление.
 
 UX:
-- Всё, что «не на своё» (edit, delete, manage, kick) → alert
-  «Это не ваша встреча».
-- edit_text вместо answer (без спама).
+- «Это не ваша встреча» → alert.
+- _safe_edit обходит TelegramBadRequest "message is not modified".
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ from datetime import datetime
 
 import structlog
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -34,8 +34,18 @@ logger = structlog.get_logger(__name__)
 router = Router(name="mine")
 
 
+async def _safe_edit(message: Message, text: str, kb=None) -> None:
+    """edit_text без падения, если контент не изменился."""
+    try:
+        await message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return
+        raise
+
+
 # ---------------------------------------------------------------------------
-# /mine
+# /mine + текстовый триггер
 # ---------------------------------------------------------------------------
 
 
@@ -81,9 +91,10 @@ async def cb_delete_ask(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Это не ваша встреча.", show_alert=True)
         return
     await query.answer()
-    await query.message.edit_text(
+    await _safe_edit(
+        query.message,
         f"Удалить встречу «{event.title}»? Записи участников тоже будут удалены.",
-        reply_markup=confirm_delete_kb(event_id),
+        confirm_delete_kb(event_id),
     )
 
 
@@ -97,13 +108,13 @@ async def cb_delete_confirm(query: CallbackQuery, session: AsyncSession) -> None
         await query.answer(exc.user_message, show_alert=True)
         return
     await query.answer()
-    await query.message.edit_text("🗑 Встреча удалена.")
+    await _safe_edit(query.message, "🗑 Встреча удалена.")
 
 
 @router.callback_query(F.data.startswith("deletecancel:"))
 async def cb_delete_cancel(query: CallbackQuery) -> None:
     await query.answer("Удаление отменено.")
-    await query.message.edit_text("Удаление отменено.")
+    await _safe_edit(query.message, "Удаление отменено.")
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +138,10 @@ async def cb_manage_people(query: CallbackQuery, session: AsyncSession) -> None:
 
     rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in people]
     await query.answer()
-    await query.message.edit_text(
-        "Кого удалить?", reply_markup=participants_kb(event_id, rows)
+    await _safe_edit(
+        query.message,
+        "Кого удалить?",
+        participants_kb(event_id, rows),
     )
 
 
@@ -144,9 +157,10 @@ async def cb_kick_ask(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Это не ваша встреча.", show_alert=True)
         return
     await query.answer()
-    await query.message.edit_text(
+    await _safe_edit(
+        query.message,
         f"Удалить участника {user_id}?",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
                 text="Да, удалить",
                 callback_data=f"kickconfirm:{event_id}:{user_id}",
@@ -174,13 +188,13 @@ async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
         return
     await enqueue_refresh(event_id, session, query.bot)
     await query.answer()
-    await query.message.edit_text("✅ Участник удалён. Место освобождено.")
+    await _safe_edit(query.message, "✅ Участник удалён. Место освобождено.")
 
 
 @router.callback_query(F.data.startswith("kickcancel:"))
 async def cb_kick_cancel(query: CallbackQuery) -> None:
     await query.answer("Удаление отменено.")
-    await query.message.edit_text("Удаление отменено.")
+    await _safe_edit(query.message, "Удаление отменено.")
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +210,10 @@ async def cb_edit_menu(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Это не ваша встреча.", show_alert=True)
         return
     await query.answer()
-    await query.message.edit_text(
-        "Что изменить?", reply_markup=edit_menu_kb(event_id)
+    await _safe_edit(
+        query.message,
+        "Что изменить?",
+        edit_menu_kb(event_id),
     )
 
 
@@ -208,7 +224,6 @@ async def cb_edit_field(query: CallbackQuery, state: FSMContext, session: AsyncS
         await query.answer("Неверный запрос.", show_alert=True)
         return
     event_id, field = int(parts[1]), parts[2]
-    # Проверка «не на своё»
     event = await session.get(Event, event_id)
     if event is None or event.owner_id != query.from_user.id:
         await query.answer("Это не ваша встреча.", show_alert=True)
