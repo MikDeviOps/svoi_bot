@@ -1,4 +1,4 @@
-"""Карточки событий и действия. UX: alerts + edit_text."""
+"""Карточки событий и действия. UX: edit_text вместо answer, alerts."""
 
 from __future__ import annotations
 
@@ -39,8 +39,7 @@ async def send_event_card(
     *,
     private_details: bool = True,
     viewer_id: int | None = None,
-) -> Message | None:
-    """Отрисовать карточку. Возвращает Message (для трекинга)."""
+) -> Message:
     booked = await _count_booked(session, event.id)
     owner = await session.get(User, event.owner_id)
     text = render_card(
@@ -56,7 +55,7 @@ async def send_event_card(
 
 
 # ---------------------------------------------------------------------------
-# detail
+# detail — edit_text (та же карточка → подробнее)
 # ---------------------------------------------------------------------------
 
 
@@ -97,12 +96,12 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
     kb = event_kb(event, booked, viewer_id=query.from_user.id)
 
     await query.answer()
-    # Меняем карточку на детали — edit_text
+    # edit_text — НЕ новое сообщение
     await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
-# join / cancel / full
+# join / cancel / full — alert, без сообщений
 # ---------------------------------------------------------------------------
 
 
@@ -150,6 +149,21 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
         return
 
     await enqueue_refresh(event_id, session, query.bot)
+    # Обновляем карточку через edit_text
+    try:
+        booked = await _count_booked(session, event_id)
+        owner = await session.get(User, event.owner_id)
+        text = render_card(
+            event, booked,
+            owner_name=owner.full_name if owner else "",
+            owner_username=owner.username if owner else "",
+            private_details=True,
+        )
+        kb = event_kb(event, booked, viewer_id=query.from_user.id)
+        await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass   # не падаем, если карточка уже не та
+
     await query.answer(
         f"✅ Вы записаны. Свободно мест: {result.available}.",
         show_alert=True,
@@ -182,6 +196,20 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
         return
 
     await enqueue_refresh(event_id, session, query.bot)
+    try:
+        booked = await _count_booked(session, event_id)
+        owner = await session.get(User, event.owner_id)
+        text = render_card(
+            event, booked,
+            owner_name=owner.full_name if owner else "",
+            owner_username=owner.username if owner else "",
+            private_details=True,
+        )
+        kb = event_kb(event, booked, viewer_id=query.from_user.id)
+        await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+
     await query.answer(
         f"❌ Запись отменена. Свободно мест: {result.available}.",
         show_alert=True,
@@ -189,7 +217,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# participants — edit_text вместо answer
+# participants — edit_text (карточка → участники)
 # ---------------------------------------------------------------------------
 
 
@@ -235,6 +263,7 @@ async def cb_participants(query: CallbackQuery, session: AsyncSession) -> None:
         (p.telegram_name or "Имя не указано").replace("\r", " ").replace("\n", " ")
         for p in participants
     ]
+
     chunks = []
     current = heading
     for name in names:
@@ -246,7 +275,8 @@ async def cb_participants(query: CallbackQuery, session: AsyncSession) -> None:
     chunks.append(current)
 
     await query.answer()
-    # Первый chunk — edit_text (заменяет карточку). Остальные — answer.
+    # edit_text — заменяет карточку на список участников (1 сообщение)
     await query.message.edit_text(chunks[0], parse_mode="HTML")
+    # Остальные chunk — если больше 3800 символов, они редки
     for chunk in chunks[1:]:
         await query.message.answer(chunk, parse_mode="HTML")
