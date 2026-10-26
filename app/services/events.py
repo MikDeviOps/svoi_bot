@@ -1,10 +1,7 @@
 """EventService — бизнес-правила для встреч.
 
-Создание, редактирование, soft-delete, список своих. Не знает про aiogram
-и про SQL — работает через сессию (``AsyncSession``).
-
-Все ошибки — доменные (``app.errors``), чтобы ``ErrorMiddleware`` мог
-показать ``user_message``.
+Не знает про aiogram и про keyboards. Работает через AsyncSession.
+Все ошибки — доменные (app.errors).
 """
 
 from __future__ import annotations
@@ -15,14 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import Event, User
+from app.db import Event, Signup, User
 from app.errors import Forbidden, NotFound, PastEvent, ValidationError
 from app.schemas import EventDraft, EventView
 
 
 async def _count_booked(session: AsyncSession, event_id: int) -> int:
-    from app.db import Signup
-
     result = await session.scalar(
         select(func.count()).select_from(Signup).where(Signup.event_id == event_id)
     )
@@ -63,16 +58,12 @@ def _to_view(event: Event, booked: int, owner: User | None = None) -> EventView:
 
 
 class EventService:
-    """Сервис встреч. Один экземпляр на update — через middleware."""
+    """Сервис встреч. Не знает про keyboards/aiogram."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
     async def create(self, draft: EventDraft, owner_id: int) -> EventView:
-        """Создать встречу из ``EventDraft``.
-
-        :raises ValidationError: не заполнены обязательные поля или дата в прошлом.
-        """
         settings = get_settings()
         required = (
             draft.title,
@@ -118,12 +109,6 @@ class EventService:
         field: str,
         value,
     ) -> EventView:
-        """Обновить одно поле встречи. ``capacity`` не может быть < booked.
-
-        :raises Forbidden: actor не владелец.
-        :raises NotFound: встреча не найдена или удалена.
-        :raises PastEvent: новая дата в прошлом.
-        """
         event = await _get_or_raise(self.session, event_id)
         if event.owner_id != actor_id:
             raise Forbidden("Редактировать встречу может только её создатель.")
@@ -153,7 +138,6 @@ class EventService:
         return _to_view(event, booked=booked, owner=owner)
 
     async def soft_delete(self, event_id: int, actor_id: int) -> None:
-        """Пометить встречу удалённой. Физически не удаляем."""
         event = await _get_or_raise(self.session, event_id)
         if event.owner_id != actor_id:
             raise Forbidden("Удалить встречу может только её создатель.")

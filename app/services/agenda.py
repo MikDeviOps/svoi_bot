@@ -1,8 +1,6 @@
 """AgendaService — даты, категории, страницы афиши.
 
-``scope`` — кортеж:
-- ``("public", None)`` — общая афиша Москвы;
-- ``("chat", chat_id)`` — афиша конкретного группового чата.
+scope = ("public", None) | ("chat", chat_id).
 """
 
 from __future__ import annotations
