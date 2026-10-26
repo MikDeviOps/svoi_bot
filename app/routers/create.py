@@ -4,30 +4,29 @@ address → conditions → capacity → visibility → group.
 Групповой ``/create`` → регистрация ``known_groups`` + ссылка в личку
 → deep-link ``create_<chat_id>`` → этот FSM.
 
-Текстовый триггер ``➕ Создать встречу`` (ReplyKeyboard) = ``/create``.
+/cancel в любом состоянии — сбрасывает FSM.
+Любая команда (/...) или ReplyKeyboard-кнопка (📅/📋/❓/➕) — сбрасывает FSM.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import datetime
 
 import structlog
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot_states import CreateEvent
-from app.config import get_settings
-from app.db import KnownGroup, User
-from app.errors import DomainError, Forbidden, ValidationError
+from app.db import KnownGroup
+from app.errors import DomainError
 from app.keyboards import (
     create_category_kb,
     create_visibility_kb,
     group_picker_kb,
-    main_menu,
     private_link_kb,
 )
 from app.schemas import EventDraft
@@ -39,7 +38,18 @@ router = Router(name="create")
 
 
 # ---------------------------------------------------------------------------
-# Entry: /create в личке → выбрать группу; /create в группе → ссылка в личку
+# /cancel — ПЕРВЫМ, до всех step_*. Иначе step_* перехватит /cancel.
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("cancel"), StateFilter("*"))
+async def cancel_create(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Создание отменено.")
+
+
+# ---------------------------------------------------------------------------
+# /create — точка входа
 # ---------------------------------------------------------------------------
 
 
@@ -72,8 +82,6 @@ async def create_command(message: Message, session: AsyncSession, state: FSMCont
         await message.answer("Создавать встречи от группы могут только её администраторы.")
         return
 
-    # Регистрация группы: если есть — обновляем title, иначе insert.
-    # Иначе при повторном /create — UniqueViolationError (pk_known_groups).
     existing = await session.get(KnownGroup, message.chat.id)
     title = message.chat.title or "Группа"
     if existing is None:
@@ -92,7 +100,6 @@ async def create_command(message: Message, session: AsyncSession, state: FSMCont
 
 @router.message(F.text.in_({"➕ Создать встречу", "создать встречу"}), StateFilter(None))
 async def text_create(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    """Текстовый триггер ReplyKeyboard ``➕ Создать встречу`` = /create."""
     await create_command(message, session=session, state=state)
 
 
@@ -102,10 +109,40 @@ async def start_create_from_group(
     session: AsyncSession,
     state: FSMContext,
 ) -> None:
-    """Точка входа из deep-link ``create_<chat_id>`` (уже в личке)."""
     await state.update_data(source_chat_id=chat_id)
     await state.set_state(CreateEvent.title)
     await message.answer("Название встречи? (от 3 до 100 символов, например: Посиделки в кафе)")
+
+
+# ---------------------------------------------------------------------------
+# Хелпер: пользователь ввёл команду / нажал ReplyKeyboard-кнопку — выйти из FSM
+# ---------------------------------------------------------------------------
+
+_COMMANDS = {"/start", "/vstrechi", "/today", "/create", "/mine", "/help", "/cancel"}
+_BUTTONS = {"📅 Афиша встреч", "📋 Мои встречи", "❓ Помощь", "➕ Создать встречу"}
+
+
+def _is_exit_intent(text: str | None) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    if t in _COMMANDS or t in _BUTTONS:
+        return True
+    if t.startswith("/") and t.split()[0] in _COMMANDS:
+        return True
+    return False
+
+
+async def _handle_exit_intent(message: Message, state: FSMContext) -> bool:
+    """Если пользователь ввёл команду/нажал кнопку — сбрасываем FSM, возвращаем True."""
+    if not _is_exit_intent(message.text):
+        return False
+    await state.clear()
+    await message.answer(
+        "Создание отменено. Используйте /create, чтобы начать заново, "
+        "или /vstrechi — для афиши."
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +172,8 @@ async def step_group(query: CallbackQuery, state: FSMContext, session: AsyncSess
 
 @router.message(CreateEvent.title)
 async def step_title(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     try:
         draft = EventDraft(title=message.text)
     except DomainError as exc:
@@ -147,6 +186,8 @@ async def step_title(message: Message, state: FSMContext) -> None:
 
 @router.message(CreateEvent.description)
 async def step_description(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     value = "" if message.text.strip() == "-" else message.text
     try:
         draft = EventDraft(description=value)
@@ -174,6 +215,8 @@ async def step_category(query: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(CreateEvent.date)
 async def step_date(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     try:
         d = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
     except ValueError:
@@ -191,6 +234,8 @@ async def step_date(message: Message, state: FSMContext) -> None:
 
 @router.message(CreateEvent.time)
 async def step_time(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     try:
         t = datetime.strptime(message.text.strip(), "%H:%M").time()
     except ValueError:
@@ -209,6 +254,8 @@ async def step_time(message: Message, state: FSMContext) -> None:
 
 @router.message(CreateEvent.address)
 async def step_address(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     try:
         draft = EventDraft(address=message.text)
     except DomainError as exc:
@@ -221,6 +268,8 @@ async def step_address(message: Message, state: FSMContext) -> None:
 
 @router.message(CreateEvent.conditions)
 async def step_conditions(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     try:
         draft = EventDraft(conditions=message.text)
     except DomainError as exc:
@@ -233,6 +282,8 @@ async def step_conditions(message: Message, state: FSMContext) -> None:
 
 @router.message(CreateEvent.capacity)
 async def step_capacity(message: Message, state: FSMContext) -> None:
+    if await _handle_exit_intent(message, state):
+        return
     try:
         value = int(message.text.strip())
         draft = EventDraft(capacity=value)
@@ -290,14 +341,3 @@ async def step_visibility(
         f"✅ Встреча №{event_view.id} создана.\n"
         f"/vstrechi — открыть афишу."
     )
-
-
-# ---------------------------------------------------------------------------
-# /cancel
-# ---------------------------------------------------------------------------
-
-
-@router.message(Command("cancel"), StateFilter("*"))
-async def cancel_create(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("Создание отменено.")
