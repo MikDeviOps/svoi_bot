@@ -18,6 +18,7 @@ from app.schemas import EventDraft, EventView
 
 
 async def _count_booked(session: AsyncSession, event_id: int) -> int:
+    """Сколько записано на событие."""
     result = await session.scalar(
         select(func.count()).select_from(Signup).where(Signup.event_id == event_id)
     )
@@ -58,7 +59,7 @@ def _to_view(event: Event, booked: int, owner: User | None = None) -> EventView:
 
 
 class EventService:
-    """Сервис встреч. Не знает про keyboards/aiogram."""
+    """Сервис встреч. Не знает про keyboards/aiogram/notifications."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
