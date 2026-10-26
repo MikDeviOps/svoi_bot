@@ -1,12 +1,10 @@
 """Рендер карточек и refresh сообщений в чатах.
 
-Единственное место с ``escape()``: любые пользовательские данные
-(title, description, address, conditions, имена) попадают в HTML
-только после экранирования.
-
-``enqueue_refresh`` сейчас вызывает ``_refresh`` напрямую. Позже
-(сценарий C) тело заменится на ``redis.xadd`` — сигнатура не меняется,
-роутеры не трогаем.
+- `render_card` — с escape() на всех пользовательских полях.
+- `enqueue_refresh` — прямой вызов (потом Redis).
+- `_refresh` — под per-event asyncio.Lock.
+  Ошибки Telegram (`message is not modified`, `message to edit not found`)
+  — игнорируются (карточка уже актуальна / удалена).
 """
 
 from __future__ import annotations
@@ -17,11 +15,12 @@ from html import escape
 
 import structlog
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
-
-from app.db import Event
-from app.services.events import _count_booked
+from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import Event, EventMessage, User
+from app.services.events import _count_booked
 
 logger = structlog.get_logger(__name__)
 
@@ -43,12 +42,11 @@ _REFRESH_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _format_datetime(event: Event) -> str:
-    """``dd.mm.yyyy · HH:MM (МСК)``."""
     dt = event.starts_at
     return f"{dt.strftime('%d.%m.%Y')} · {dt.strftime('%H:%M')} (МСК)"
 
 
-def _owner_display(event: Event, owner_name: str | None = None, owner_username: str | None = None) -> str:
+def _owner_display(event: Event, owner_name: str = "", owner_username: str = "") -> str:
     if owner_username:
         return f"@{owner_username}"
     if owner_name:
@@ -64,10 +62,6 @@ def render_card(
     owner_username: str = "",
     private_details: bool = True,
 ) -> str:
-    """HTML-карточка события.
-
-    Все пользовательские поля — через ``escape()``.
-    """
     available = max(0, event.capacity - booked)
     category = CATEGORY_LABELS.get(event.category, "🎭 Другое")
 
@@ -96,7 +90,6 @@ def render_card(
 
 
 def render_summary(event: Event, booked: int) -> str:
-    """Короткая сводка (для «мои встречи», списков)."""
     available = max(0, event.capacity - booked)
     category = CATEGORY_LABELS.get(event.category, "🎭 Другое")
     return (
@@ -108,9 +101,6 @@ def render_summary(event: Event, booked: int) -> str:
 
 async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
     """Обновить все известные карточки события. Под per-event lock."""
-    from sqlalchemy import select
-    from app.db import EventMessage, User
-
     lock = _REFRESH_LOCKS[event_id]
     async with lock:
         event = await session.get(Event, event_id)
@@ -142,19 +132,24 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
                     text=text,
                     parse_mode="HTML",
                 )
-            except TelegramAPIError as exc:
+            except TelegramBadRequest as exc:
+                err = str(exc)
+                if "message is not modified" in err:
+                    continue   # уже актуально — молча
+                if "message to edit not found" in err:
+                    continue   # карточка удалена — молча
                 logger.info(
                     "refresh_failed",
                     event_id=event_id,
                     chat_id=msg.chat_id,
                     message_id=msg.message_id,
-                    error=str(exc),
+                    error=err,
                 )
 
 
 async def enqueue_refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
     """Точка входа для refresh. Сейчас — прямой вызов.
 
-    Позже заменим на ``redis.xadd`` без изменения сигнатуры.
+    Позже — заменить на redis.xadd без изменения сигнатуры.
     """
     await _refresh(event_id, session, bot)
