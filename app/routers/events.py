@@ -1,10 +1,10 @@
 """Карточки событий и действия: join, cancel, participants, detail, full.
 
 UX:
-- `join` / `cancel` → `callback.answer(show_alert=True)` — тост сверху,
-  без сообщения в чат. Карточка обновляется через `enqueue_refresh`.
-- `detail` / `participants` → `message.answer` (это запрос данных).
-- «Не на своё» (удалить, редактировать) → `show_alert=True`.
+- join / cancel → alert (тост) + enqueue_refresh (карточки обновляются).
+  НЕ отправляем сообщение в чат — никакого спама.
+- detail / participants → ответ на сообщение (это запрос данных).
+- Всё, что «не на своё» → alert «Это не ваша встреча».
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ router = Router(name="events")
 async def _save_event_message(
     session: AsyncSession, sent_message: Message, event_id: int
 ) -> None:
-    """Запомнить, что карточка события отправлена в этот чат (для refresh)."""
     session.add(EventMessage(
         event_id=event_id,
         chat_id=sent_message.chat.id,
@@ -46,11 +45,11 @@ async def send_event_card(
     event: Event,
     *,
     private_details: bool = True,
+    viewer_id: int | None = None,
 ) -> None:
-    """Отрисовать карточку события с инлайн-кнопками."""
+    """Отрисовать карточку. viewer_id — кто смотрит (для кнопки «Удалить»)."""
     booked = await _count_booked(session, event.id)
     owner = await session.get(User, event.owner_id)
-
     text = render_card(
         event,
         booked,
@@ -58,14 +57,13 @@ async def send_event_card(
         owner_username=owner.username if owner else "",
         private_details=private_details,
     )
-    kb = event_kb(event, booked, viewer_id=None)
-
+    kb = event_kb(event, booked, viewer_id=viewer_id)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await _save_event_message(session, sent, event.id)
 
 
 # ---------------------------------------------------------------------------
-# detail: показать полную карточку
+# detail
 # ---------------------------------------------------------------------------
 
 
@@ -107,12 +105,11 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
     kb = event_kb(event, booked, viewer_id=query.from_user.id)
 
     await query.answer()
-    sent = await query.message.answer(text, reply_markup=kb, parse_mode="HTML")
-    await _save_event_message(session, sent, event_id)
+    await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
-# join: записать → alert, карточка обновится через refresh
+# join — alert, без сообщения
 # ---------------------------------------------------------------------------
 
 
@@ -159,10 +156,9 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
         await query.answer(result.reason, show_alert=True)
         return
 
-    # Обновить карточки во всех чатах (счётчик мест)
     await enqueue_refresh(event_id, session, query.bot)
 
-    # ← Тост сверху, без сообщения в чат
+    # Тост сверху, без сообщения в чат
     await query.answer(
         f"✅ Вы записаны. Свободно мест: {result.available}.",
         show_alert=True,
@@ -170,7 +166,7 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
 
 
 # ---------------------------------------------------------------------------
-# full: нет мест
+# full
 # ---------------------------------------------------------------------------
 
 
@@ -180,7 +176,7 @@ async def cb_full(query: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# cancel: отменить → alert, карточка обновится через refresh
+# cancel — alert, без сообщения
 # ---------------------------------------------------------------------------
 
 
@@ -213,7 +209,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# participants: список участников
+# participants — список участников (новое сообщение, т.к. это запрос)
 # ---------------------------------------------------------------------------
 
 
@@ -247,7 +243,6 @@ async def cb_participants(query: CallbackQuery, session: AsyncSession) -> None:
         (p.telegram_name or "Имя не указано").replace("\r", " ").replace("\n", " ")
         for p in participants
     ]
-
     chunks = []
     current = heading
     for name in names:

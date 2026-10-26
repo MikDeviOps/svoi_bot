@@ -1,14 +1,14 @@
 """Афиша встреч: /vstrechi, /today, scope, dates, categories, page.
 
 UX:
-- `📅 Афиша встреч` (ReplyKeyboard) → `_show_scope`. Удаляет предыдущее
-  сообщение, чтобы не спамить (5 нажатий = 5 сообщений).
-- `scope`, `pickdate`, `category`, `page` → `edit_text` (одно сообщение).
+- 📅 Афиша встреч (ReplyKeyboard) → _show_scope. Удаляет предыдущее
+  сообщение, чтобы не спамить.
+- scope / pickdate / category / page → edit_text (одно сообщение).
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 import structlog
 from aiogram import F, Router
@@ -64,14 +64,14 @@ async def text_vstrechi(message: Message, state: FSMContext) -> None:
 async def _show_scope(
     message: Message, state: FSMContext, forced_date: date | None = None
 ) -> None:
-    """Показать выбор scope. Удаляет предыдущее сообщение с кнопками."""
+    # Удалить предыдущее сообщение с кнопками
     data = await state.get_data()
     prev_id = data.get("scope_message_id")
     if prev_id:
         try:
             await message.bot.delete_message(message.chat.id, prev_id)
         except Exception:
-            pass   # сообщение уже удалено / старое — не падаем
+            pass
 
     chat_id = message.chat.id if message.chat.type in {"group", "supergroup"} else None
     text = "Выберите афишу:" if forced_date is None else "Выберите афишу на сегодня:"
@@ -80,7 +80,7 @@ async def _show_scope(
 
 
 # ---------------------------------------------------------------------------
-# Callbacks: scope, pickdate, category, page
+# Callbacks
 # ---------------------------------------------------------------------------
 
 
@@ -212,7 +212,6 @@ async def _show_event_page(
     category: str,
     page_num: int,
 ) -> None:
-    """Показать карточки событий категории на странице ``page_num``."""
     from app.routers.events import send_event_card
     from app.services.notifications import CATEGORY_LABELS
 
@@ -224,7 +223,8 @@ async def _show_event_page(
         return
 
     for event in events:
-        await send_event_card(message, session, event, private_details=True)
+        # viewer_id=None: в афише «Удалить» не показываем (это общий список)
+        await send_event_card(message, session, event, private_details=True, viewer_id=None)
 
     token = _scope_token(scope)
     has_next = len(events) == 10
