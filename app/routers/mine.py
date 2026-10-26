@@ -1,10 +1,4 @@
-"""/mine + редактирование + управление участниками + удаление.
-
-UX:
-- «Это не ваша встреча» → alert.
-- _safe_edit обходит TelegramBadRequest "message is not modified".
-- kick_confirm: query.answer() в начале + refresh в фоне (не таймаутит).
-"""
+"""/mine + редактирование + управление участниками + удаление."""
 
 from __future__ import annotations
 
@@ -29,7 +23,7 @@ from app.db import Event
 from app.errors import DomainError
 from app.keyboards import confirm_delete_kb, edit_menu_kb, mine_kb, participants_kb
 from app.services.events import EventService
-from app.services.notifications import enqueue_refresh
+from app.services.notifications import enqueue_refresh, enqueue_refresh_safe
 from app.services.signups import SignupService
 
 logger = structlog.get_logger(__name__)
@@ -194,8 +188,8 @@ async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
 
     await _safe_edit(query.message, "✅ Участник удалён. Место освобождено.")
 
-    # Refresh — в фоне, чтобы не таймаутить callback
-    asyncio.create_task(enqueue_refresh(event_id, session, query.bot))
+    # Refresh — в фоне с НОВОЙ сессией (сессия хендлера закроется после return)
+    asyncio.create_task(enqueue_refresh_safe(event_id, query.bot))
 
 
 @router.callback_query(F.data.startswith("kickcancel:"))
