@@ -1,8 +1,4 @@
-"""Фабрики клавиатур. Только InlineKeyboardMarkup/ReplyKeyboardMarkup.
-
-Не знают про БД и сервисы. Принимают id/флаги/dict.
-CATEGORY_LABELS — из app/labels.py (разрыв circular import).
-"""
+"""Фабрики клавиатур. Только InlineKeyboardMarkup/ReplyKeyboardMarkup."""
 
 from __future__ import annotations
 
@@ -17,11 +13,6 @@ from app.db import Event
 from app.labels import CATEGORY_LABELS
 
 
-# ---------------------------------------------------------------------------
-# Главное меню
-# ---------------------------------------------------------------------------
-
-
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -31,11 +22,6 @@ def main_menu() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=True,
     )
-
-
-# ---------------------------------------------------------------------------
-# Афиша
-# ---------------------------------------------------------------------------
 
 
 def scope_menu(chat_id: int | None = None) -> InlineKeyboardMarkup:
@@ -97,12 +83,17 @@ def pagination_kb(
     ]])
 
 
-# ---------------------------------------------------------------------------
-# Карточка события
-# ---------------------------------------------------------------------------
+def event_kb(
+    event: Event,
+    booked: int,
+    viewer_id: int | None = None,
+    *,
+    show_detail: bool = True,
+) -> InlineKeyboardMarkup:
+    """Клавиатура карточки.
 
-
-def event_kb(event: Event, booked: int, viewer_id: int | None = None) -> InlineKeyboardMarkup:
+    :param show_detail: если False — не показываем «Подробнее» (карточка уже подробная).
+    """
     event_id = event.id
     available = event.capacity - booked
 
@@ -111,11 +102,13 @@ def event_kb(event: Event, booked: int, viewer_id: int | None = None) -> InlineK
     else:
         join_text, join_cb = "Мест нет", f"full:{event_id}"
 
+    top_row: list[InlineKeyboardButton] = []
+    if show_detail:
+        top_row.append(InlineKeyboardButton(text="Подробнее", callback_data=f"detail:{event_id}"))
+    top_row.append(InlineKeyboardButton(text=join_text, callback_data=join_cb))
+
     rows = [
-        [
-            InlineKeyboardButton(text="Подробнее", callback_data=f"detail:{event_id}"),
-            InlineKeyboardButton(text=join_text, callback_data=join_cb),
-        ],
+        top_row,
         [
             InlineKeyboardButton(text="👥 Участники", callback_data=f"participants:{event_id}"),
             InlineKeyboardButton(text="❌ Отменить запись", callback_data=f"cancel:{event_id}"),
@@ -126,11 +119,6 @@ def event_kb(event: Event, booked: int, viewer_id: int | None = None) -> InlineK
             InlineKeyboardButton(text="🗑 Удалить встречу", callback_data=f"deleteask:{event_id}")
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# ---------------------------------------------------------------------------
-# FSM создания
-# ---------------------------------------------------------------------------
 
 
 def create_category_kb() -> InlineKeyboardMarkup:
@@ -169,11 +157,6 @@ def private_link_kb(url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="Открыть личный чат", url=url)
     ]])
-
-
-# ---------------------------------------------------------------------------
-# «Мои встречи» и редактирование
-# ---------------------------------------------------------------------------
 
 
 def mine_kb(event_id: int) -> InlineKeyboardMarkup:
