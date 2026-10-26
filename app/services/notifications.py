@@ -3,6 +3,9 @@
 - render_card — escape() на всех пользовательских полях.
 - CATEGORY_LABELS — из app/labels.py (разрыв circular import).
 - _refresh — try/except TelegramBadRequest (skip 'message is not modified').
+- enqueue_refresh — с ПЕРЕДАННОЙ сессией (для хендлеров, `await`).
+- enqueue_refresh_safe — с НОВОЙ сессией из async_session_factory
+  (для фоновых asyncio.create_task, сессия хендлера закроется после return).
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import Event, EventMessage, User
+from app.db import Event, EventMessage, User, async_session_factory
 from app.labels import CATEGORY_LABELS
 from app.services.events import _count_booked
 
@@ -97,7 +100,8 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
         owner_username = owner.username if owner else ""
 
         text = render_card(
-            event, booked,
+            event,
+            booked,
             owner_name=owner_name,
             owner_username=owner_username,
             private_details=True,
@@ -131,4 +135,17 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
 
 
 async def enqueue_refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
+    """Refresh с ПЕРЕДАННОЙ сессией (синхронно, для хендлеров).
+
+    Использовать в хендлере с `await` — сессия жива до конца хендлера.
+    """
     await _refresh(event_id, session, bot)
+
+
+async def enqueue_refresh_safe(event_id: int, bot: Bot) -> None:
+    """Refresh с НОВОЙ сессией (для фоновых `asyncio.create_task`).
+
+    Не использует переданную сессию (она закроется после `return` из хендлера).
+    """
+    async with async_session_factory() as session:
+        await _refresh(event_id, session, bot)
