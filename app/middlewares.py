@@ -1,8 +1,10 @@
 """Middleware для aiogram.
 
 - ``DbSessionMiddleware`` — одна async-сессия на update (commit/rollback/close).
-- ``UserUpsertMiddleware`` — upsert ``users`` при каждом update.
-- ``ErrorMiddleware`` — DomainError → user-safe текст; логирование неожиданных.
+- ``UserUpsertMiddleware`` — атомарный upsert ``users`` через
+  ``INSERT ... ON CONFLICT`` (без race condition).
+- ``ErrorMiddleware`` — ``DomainError`` → user-safe текст; неожиданные —
+  лог + общее сообщение.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import Any
 import structlog
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update
-from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db import User
@@ -25,7 +27,9 @@ logger = structlog.get_logger(__name__)
 class DbSessionMiddleware(BaseMiddleware):
     """Одна сессия на update. Commit/rollback автоматически.
 
-    Сессия кладётся в ``data["session"]``.
+    Сессия кладётся в ``data["session"]``. ``commit`` — если хендлер
+    отработал без исключения; ``rollback`` — если ``DomainError`` или
+    любое другое; ``close`` — в ``finally``.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -54,7 +58,12 @@ class DbSessionMiddleware(BaseMiddleware):
 class UserUpsertMiddleware(BaseMiddleware):
     """Upsert ``users`` по ``tg_id`` при каждом update от пользователя.
 
-    Пользователь кладётся в ``data["user"]``.
+    Использует ``INSERT ... ON CONFLICT (tg_id) DO UPDATE`` — **атомарно**.
+    Два параллельных update от одного ``tg_id`` не падают в
+    ``UniqueViolationError`` (race condition, который был при
+    ``session.get`` + ``session.add``).
+
+    Кладёт ORM-объект ``User`` в ``data["user"]``.
     """
 
     async def __call__(
@@ -65,19 +74,29 @@ class UserUpsertMiddleware(BaseMiddleware):
     ) -> Any:
         tg_user = data.get("event_from_user")
         session: AsyncSession | None = data.get("session")
+
         if tg_user is not None and session is not None:
-            existing = await session.get(User, tg_user.id)
-            if existing is None:
-                session.add(User(
+            stmt = (
+                pg_insert(User)
+                .values(
                     tg_id=tg_user.id,
                     username=tg_user.username or "",
                     full_name=tg_user.full_name or "",
-                ))
-            else:
-                existing.username = tg_user.username or ""
-                existing.full_name = tg_user.full_name or ""
+                )
+                .on_conflict_do_update(
+                    index_elements=[User.tg_id],
+                    set_={
+                        "username": tg_user.username or "",
+                        "full_name": tg_user.full_name or "",
+                    },
+                )
+            )
+            await session.execute(stmt)
             await session.flush()
-            data["user"] = existing or tg_user
+
+            user = await session.get(User, tg_user.id)
+            data["user"] = user
+
         return await handler(event, data)
 
 
@@ -96,18 +115,28 @@ class ErrorMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except DomainError as exc:
-            logger.info("domain_error", error=type(exc).__name__, message=exc.user_message)
+            logger.info(
+                "domain_error",
+                error=type(exc).__name__,
+                message=exc.user_message,
+            )
             await self._reply(event, exc.user_message)
             return None
         except Exception as exc:
-            logger.exception("unhandled_error", error=type(exc).__name__, exc_info=exc)
+            logger.exception(
+                "unhandled_error",
+                error=type(exc).__name__,
+                exc_info=exc,
+            )
             await self._reply(event, "Что-то пошло не так. Попробуйте позже.")
             return None
 
     @staticmethod
     async def _reply(event: TelegramObject, text: str) -> None:
         if isinstance(event, Update):
-            target = event.message or (event.callback_query.message if event.callback_query else None)
+            target = event.message or (
+                event.callback_query.message if event.callback_query else None
+            )
         elif isinstance(event, Message):
             target = event
         elif isinstance(event, CallbackQuery):
