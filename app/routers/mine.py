@@ -1,24 +1,33 @@
 """/mine + редактирование + управление участниками + удаление.
 
-Текстовый триггер ``📋 Мои встречи`` (ReplyKeyboard) = /mine.
+UX:
+- «Не на своё» (удалить, редактировать, управлять) → `show_alert=True`,
+  без сообщения в чат.
+- `edit_text` для подтверждений вместо `answer` (одно сообщение).
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 
 import structlog
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot_states import EditEvent
 from app.db import Event
-from app.errors import DomainError, Forbidden, NotFound, ValidationError
+from app.errors import DomainError
 from app.keyboards import confirm_delete_kb, edit_menu_kb, mine_kb, participants_kb
-from app.services.events import EventService, _count_booked
+from app.services.events import EventService
+from app.services.notifications import enqueue_refresh
 from app.services.signups import SignupService
 
 logger = structlog.get_logger(__name__)
@@ -26,7 +35,7 @@ router = Router(name="mine")
 
 
 # ---------------------------------------------------------------------------
-# /mine
+# /mine + текстовый триггер
 # ---------------------------------------------------------------------------
 
 
@@ -53,7 +62,6 @@ async def mine(message: Message, session: AsyncSession) -> None:
 
 @router.message(F.text.in_({"📋 Мои встречи"}))
 async def text_mine(message: Message, session: AsyncSession) -> None:
-    """Текстовый триггер ReplyKeyboard ``📋 Мои встречи`` = /mine."""
     await mine(message, session=session)
 
 
@@ -67,13 +75,15 @@ async def cb_delete_ask(query: CallbackQuery, session: AsyncSession) -> None:
     event_id = int(query.data.split(":", 1)[1])
     event = await session.get(Event, event_id)
     if event is None or event.deleted_at is not None:
-        await query.answer("Встреча не найдена.")
+        await query.answer("Встреча не найдена.", show_alert=True)
         return
     if event.owner_id != query.from_user.id:
-        await query.answer("Удалить встречу может только её создатель.", show_alert=True)
+        await query.answer(
+            "Удалить встречу может только её создатель.", show_alert=True
+        )
         return
     await query.answer()
-    await query.message.answer(
+    await query.message.edit_text(
         f"Удалить встречу «{event.title}»? Записи участников тоже будут удалены.",
         reply_markup=confirm_delete_kb(event_id),
     )
@@ -120,14 +130,16 @@ async def cb_manage_people(query: CallbackQuery, session: AsyncSession) -> None:
 
     rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in people]
     await query.answer()
-    await query.message.answer("Кого удалить?", reply_markup=participants_kb(event_id, rows))
+    await query.message.edit_text(
+        "Кого удалить?", reply_markup=participants_kb(event_id, rows)
+    )
 
 
 @router.callback_query(F.data.startswith("kickask:"))
 async def cb_kick_ask(query: CallbackQuery, session: AsyncSession) -> None:
     parts = query.data.split(":")
     if len(parts) != 3:
-        await query.answer("Неверный запрос.")
+        await query.answer("Неверный запрос.", show_alert=True)
         return
     event_id, user_id = int(parts[1]), int(parts[2])
     event = await session.get(Event, event_id)
@@ -135,11 +147,17 @@ async def cb_kick_ask(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Вы не организатор.", show_alert=True)
         return
     await query.answer()
-    await query.message.answer(
+    await query.message.edit_text(
         f"Удалить участника {user_id}?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Да, удалить", callback_data=f"kickconfirm:{event_id}:{user_id}"),
-            InlineKeyboardButton(text="Нет", callback_data=f"kickcancel:{event_id}:{user_id}"),
+            InlineKeyboardButton(
+                text="Да, удалить",
+                callback_data=f"kickconfirm:{event_id}:{user_id}",
+            ),
+            InlineKeyboardButton(
+                text="Нет",
+                callback_data=f"kickcancel:{event_id}:{user_id}",
+            ),
         ]]),
     )
 
@@ -148,7 +166,7 @@ async def cb_kick_ask(query: CallbackQuery, session: AsyncSession) -> None:
 async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
     parts = query.data.split(":")
     if len(parts) != 3:
-        await query.answer("Неверный запрос.")
+        await query.answer("Неверный запрос.", show_alert=True)
         return
     event_id, user_id = int(parts[1]), int(parts[2])
     service = SignupService(session)
@@ -157,6 +175,7 @@ async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
     except DomainError as exc:
         await query.answer(exc.user_message, show_alert=True)
         return
+    await enqueue_refresh(event_id, session, query.bot)
     await query.answer()
     await query.message.edit_text("✅ Участник удалён. Место освобождено.")
 
@@ -180,14 +199,14 @@ async def cb_edit_menu(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Вы не организатор.", show_alert=True)
         return
     await query.answer()
-    await query.message.answer("Что изменить?", reply_markup=edit_menu_kb(event_id))
+    await query.message.edit_text("Что изменить?", reply_markup=edit_menu_kb(event_id))
 
 
 @router.callback_query(F.data.startswith("editfield:"))
 async def cb_edit_field(query: CallbackQuery, state: FSMContext) -> None:
     parts = query.data.split(":")
     if len(parts) != 3:
-        await query.answer("Неверный запрос.")
+        await query.answer("Неверный запрос.", show_alert=True)
         return
     event_id, field = int(parts[1]), parts[2]
     await state.update_data(edit_event_id=event_id, edit_field=field)
@@ -212,12 +231,16 @@ async def step_edit_value(message: Message, state: FSMContext, session: AsyncSes
         if field == "date":
             d = datetime.strptime(raw, "%d.%m.%Y").date()
             event = await session.get(Event, event_id)
-            starts_at = datetime.combine(d, event.starts_at.time()).replace(tzinfo=event.starts_at.tzinfo)
+            starts_at = datetime.combine(d, event.starts_at.time()).replace(
+                tzinfo=event.starts_at.tzinfo
+            )
             await service.update(event_id, message.from_user.id, "starts_at", starts_at)
         elif field == "time":
             t = datetime.strptime(raw, "%H:%M").time()
             event = await session.get(Event, event_id)
-            starts_at = datetime.combine(event.starts_at.date(), t).replace(tzinfo=event.starts_at.tzinfo)
+            starts_at = datetime.combine(event.starts_at.date(), t).replace(
+                tzinfo=event.starts_at.tzinfo
+            )
             await service.update(event_id, message.from_user.id, "starts_at", starts_at)
         elif field == "capacity":
             await service.update(event_id, message.from_user.id, "capacity", int(raw))
@@ -229,6 +252,7 @@ async def step_edit_value(message: Message, state: FSMContext, session: AsyncSes
         return
 
     await state.clear()
+    await enqueue_refresh(event_id, session, message.bot)
     await message.answer("✅ Встреча обновлена.")
 
 
