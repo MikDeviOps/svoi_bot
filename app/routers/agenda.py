@@ -1,7 +1,10 @@
 """Афиша встреч: /vstrechi, /today, scope, dates, categories, page.
 
-UX: одно сообщение афиши — `edit_text`. Карточки событий — удаляются
-при переходе между экранами. `_show_scope` удаляет ВСЁ.
+UX:
+- `📅 Афиша встреч` (ReplyKeyboard) → `_show_scope`. Удаляет ВСЕ сообщения
+  афиши (scope + карточки + участники), чтобы не спамить.
+- `scope`, `pickdate`, `category`, `page` → `edit_text` (одно сообщение).
+- `_show_event_page` — удаляет предыдущее, отправляет карточки.
 """
 
 from __future__ import annotations
@@ -52,7 +55,7 @@ async def _delete_agenda_messages(message: Message, state: FSMContext) -> None:
 
 
 async def _track(state: FSMContext, message_id: int) -> None:
-    """Запомнить id карточки/сообщения — чтобы удалить при переходе."""
+    """Запомнить id сообщения — чтобы удалить при переходе."""
     data = await state.get_data()
     ids = list(data.get("agenda_message_ids", []))
     ids.append(message_id)
@@ -84,7 +87,6 @@ async def text_vstrechi(message: Message, state: FSMContext) -> None:
 async def _show_scope(
     message: Message, state: FSMContext, forced_date: date | None = None
 ) -> None:
-    # Сначала удалить всё старое
     await _delete_agenda_messages(message, state)
 
     chat_id = message.chat.id if message.chat.type in {"group", "supergroup"} else None
@@ -234,10 +236,8 @@ async def _show_event_page(
     from app.routers.events import send_event_card
     from app.services.notifications import CATEGORY_LABELS
 
-    # 1. Удалить предыдущие карточки (если были) — по state
     await _delete_agenda_messages(query.message, state)
 
-    # 2. Удалить scope/категории-сообщение (edit_text уже был)
     try:
         await query.message.delete()
     except Exception:
@@ -253,15 +253,12 @@ async def _show_event_page(
         await _track(state, sent.message_id)
         return
 
-    # 3. Карточки — новые, с трекингом
     for event in events:
         sent = await send_event_card(
             query.message, session, event, private_details=True, viewer_id=None
         )
-        if sent is not None:
-            await _track(state, sent.message_id)
+        await _track(state, sent.message_id)
 
-    # 4. Пагинация
     token = _scope_token(scope)
     has_next = len(events) == 10
     kb = pagination_kb(token, day.isoformat(), category, page_num, has_next)
