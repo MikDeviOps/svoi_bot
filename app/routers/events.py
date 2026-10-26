@@ -1,11 +1,4 @@
-"""Карточки событий и действия: join, cancel, participants, detail, full.
-
-UX:
-- join / cancel → alert (тост) + enqueue_refresh (карточки обновляются).
-  НЕ отправляем сообщение в чат — никакого спама.
-- detail / participants → ответ на сообщение (это запрос данных).
-- Всё, что «не на своё» → alert «Это не ваша встреча».
-"""
+"""Карточки событий и действия. UX: alerts + edit_text."""
 
 from __future__ import annotations
 
@@ -46,13 +39,12 @@ async def send_event_card(
     *,
     private_details: bool = True,
     viewer_id: int | None = None,
-) -> None:
-    """Отрисовать карточку. viewer_id — кто смотрит (для кнопки «Удалить»)."""
+) -> Message | None:
+    """Отрисовать карточку. Возвращает Message (для трекинга)."""
     booked = await _count_booked(session, event.id)
     owner = await session.get(User, event.owner_id)
     text = render_card(
-        event,
-        booked,
+        event, booked,
         owner_name=owner.full_name if owner else "",
         owner_username=owner.username if owner else "",
         private_details=private_details,
@@ -60,6 +52,7 @@ async def send_event_card(
     kb = event_kb(event, booked, viewer_id=viewer_id)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await _save_event_message(session, sent, event.id)
+    return sent
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +89,7 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
     booked = await _count_booked(session, event_id)
     owner = await session.get(User, event.owner_id)
     text = render_card(
-        event,
-        booked,
+        event, booked,
         owner_name=owner.full_name if owner else "",
         owner_username=owner.username if owner else "",
         private_details=True,
@@ -105,11 +97,12 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
     kb = event_kb(event, booked, viewer_id=query.from_user.id)
 
     await query.answer()
+    # Меняем карточку на детали — edit_text
     await query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
-# join — alert, без сообщения
+# join / cancel / full
 # ---------------------------------------------------------------------------
 
 
@@ -157,27 +150,15 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
         return
 
     await enqueue_refresh(event_id, session, query.bot)
-
-    # Тост сверху, без сообщения в чат
     await query.answer(
         f"✅ Вы записаны. Свободно мест: {result.available}.",
         show_alert=True,
     )
 
 
-# ---------------------------------------------------------------------------
-# full
-# ---------------------------------------------------------------------------
-
-
 @router.callback_query(F.data.startswith("full:"))
 async def cb_full(query: CallbackQuery) -> None:
     await query.answer("На эту встречу уже нет свободных мест.", show_alert=True)
-
-
-# ---------------------------------------------------------------------------
-# cancel — alert, без сообщения
-# ---------------------------------------------------------------------------
 
 
 @router.callback_query(F.data.startswith("cancel:"))
@@ -201,7 +182,6 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
         return
 
     await enqueue_refresh(event_id, session, query.bot)
-
     await query.answer(
         f"❌ Запись отменена. Свободно мест: {result.available}.",
         show_alert=True,
@@ -209,7 +189,7 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
-# participants — список участников (новое сообщение, т.к. это запрос)
+# participants — edit_text вместо answer
 # ---------------------------------------------------------------------------
 
 
@@ -226,17 +206,29 @@ async def cb_participants(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Встреча не найдена.", show_alert=True)
         return
 
+    if not await can_access_event(
+        event,
+        chat_id=query.message.chat.id,
+        chat_type=query.message.chat.type,
+        user_id=query.from_user.id,
+        bot=query.bot,
+    ):
+        await query.answer(
+            "Список участников доступен только участникам чата-организатора.",
+            show_alert=True,
+        )
+        return
+
     service = SignupService(session)
     participants = await service.list_participants(event_id)
-    count = len(participants)
     heading = (
         f"👥 Участники встречи «{escape(event.title)}»\n"
-        f"Записано: {count}/{event.capacity}"
+        f"Записано: {len(participants)}/{event.capacity}"
     )
 
     if not participants:
         await query.answer()
-        await query.message.answer(f"{heading}\nПока никто не записался.")
+        await query.message.edit_text(f"{heading}\nПока никто не записался.")
         return
 
     names = [
@@ -254,5 +246,7 @@ async def cb_participants(query: CallbackQuery, session: AsyncSession) -> None:
     chunks.append(current)
 
     await query.answer()
-    for chunk in chunks:
+    # Первый chunk — edit_text (заменяет карточку). Остальные — answer.
+    await query.message.edit_text(chunks[0], parse_mode="HTML")
+    for chunk in chunks[1:]:
         await query.message.answer(chunk, parse_mode="HTML")

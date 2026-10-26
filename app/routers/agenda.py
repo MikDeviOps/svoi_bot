@@ -1,9 +1,7 @@
 """Афиша встреч: /vstrechi, /today, scope, dates, categories, page.
 
-UX:
-- 📅 Афиша встреч (ReplyKeyboard) → _show_scope. Удаляет предыдущее
-  сообщение, чтобы не спамить.
-- scope / pickdate / category / page → edit_text (одно сообщение).
+UX: одно сообщение афиши — `edit_text`. Карточки событий — удаляются
+при переходе между экранами. `_show_scope` удаляет ВСЁ.
 """
 
 from __future__ import annotations
@@ -25,9 +23,7 @@ router = Router(name="agenda")
 
 
 def _scope_token(scope: tuple[str, int | None]) -> str:
-    if scope[0] == "public":
-        return "public"
-    return f"chat{scope[1]}"
+    return "public" if scope[0] == "public" else f"chat{scope[1]}"
 
 
 def _scope_from_token(token: str) -> tuple[str, int | None] | None:
@@ -39,6 +35,28 @@ def _scope_from_token(token: str) -> tuple[str, int | None] | None:
         except ValueError:
             return None
     return None
+
+
+async def _delete_agenda_messages(message: Message, state: FSMContext) -> None:
+    """Удалить все сообщения афиши (scope + карточки + пагинация)."""
+    data = await state.get_data()
+    ids = list(data.get("agenda_message_ids", []))
+    if data.get("scope_message_id"):
+        ids.append(data["scope_message_id"])
+    for mid in ids:
+        try:
+            await message.bot.delete_message(message.chat.id, mid)
+        except Exception:
+            pass
+    await state.update_data(agenda_message_ids=[], scope_message_id=None)
+
+
+async def _track(state: FSMContext, message_id: int) -> None:
+    """Запомнить id карточки/сообщения — чтобы удалить при переходе."""
+    data = await state.get_data()
+    ids = list(data.get("agenda_message_ids", []))
+    ids.append(message_id)
+    await state.update_data(agenda_message_ids=ids)
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +74,9 @@ async def today(message: Message, state: FSMContext) -> None:
     await _show_scope(message, state, forced_date=date.today())
 
 
-@router.message(F.text.casefold().in_({"встречи", "ближайшие встречи", "📅 афиша встреч"}))
+@router.message(
+    F.text.casefold().in_({"встречи", "ближайшие встречи", "📅 афиша встреч"})
+)
 async def text_vstrechi(message: Message, state: FSMContext) -> None:
     await _show_scope(message, state)
 
@@ -64,14 +84,8 @@ async def text_vstrechi(message: Message, state: FSMContext) -> None:
 async def _show_scope(
     message: Message, state: FSMContext, forced_date: date | None = None
 ) -> None:
-    # Удалить предыдущее сообщение с кнопками
-    data = await state.get_data()
-    prev_id = data.get("scope_message_id")
-    if prev_id:
-        try:
-            await message.bot.delete_message(message.chat.id, prev_id)
-        except Exception:
-            pass
+    # Сначала удалить всё старое
+    await _delete_agenda_messages(message, state)
 
     chat_id = message.chat.id if message.chat.type in {"group", "supergroup"} else None
     text = "Выберите афишу:" if forced_date is None else "Выберите афишу на сегодня:"
@@ -157,7 +171,9 @@ async def cb_pickdate(query: CallbackQuery, session: AsyncSession) -> None:
 
 
 @router.callback_query(F.data.startswith("category:"))
-async def cb_category(query: CallbackQuery, session: AsyncSession) -> None:
+async def cb_category(
+    query: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
     parts = query.data.split(":")
     if len(parts) != 5:
         await query.answer("Не удалось открыть категорию.", show_alert=True)
@@ -177,11 +193,13 @@ async def cb_category(query: CallbackQuery, session: AsyncSession) -> None:
 
     category = parts[3]
     await query.answer()
-    await _show_event_page(query.message, session, scope, day, category, page_num)
+    await _show_event_page(query, session, scope, day, category, page_num, state)
 
 
 @router.callback_query(F.data.startswith("page:"))
-async def cb_page(query: CallbackQuery, session: AsyncSession) -> None:
+async def cb_page(
+    query: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
     parts = query.data.split(":")
     if len(parts) != 5:
         await query.answer("Не удалось открыть страницу.", show_alert=True)
@@ -201,37 +219,56 @@ async def cb_page(query: CallbackQuery, session: AsyncSession) -> None:
 
     category = parts[3]
     await query.answer()
-    await _show_event_page(query.message, session, scope, day, category, page_num)
+    await _show_event_page(query, session, scope, day, category, page_num, state)
 
 
 async def _show_event_page(
-    message,
+    query: CallbackQuery,
     session: AsyncSession,
     scope: tuple[str, int | None],
     day: date,
     category: str,
     page_num: int,
+    state: FSMContext,
 ) -> None:
     from app.routers.events import send_event_card
     from app.services.notifications import CATEGORY_LABELS
+
+    # 1. Удалить предыдущие карточки (если были) — по state
+    await _delete_agenda_messages(query.message, state)
+
+    # 2. Удалить scope/категории-сообщение (edit_text уже был)
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
 
     service = AgendaService(session)
     events = await service.page(scope, day, category, page=page_num, per_page=10)
 
     if not events:
-        await message.answer("В этой категории на выбранную дату встреч больше нет.")
+        sent = await query.message.answer(
+            "В этой категории на выбранную дату встреч больше нет."
+        )
+        await _track(state, sent.message_id)
         return
 
+    # 3. Карточки — новые, с трекингом
     for event in events:
-        # viewer_id=None: в афише «Удалить» не показываем (это общий список)
-        await send_event_card(message, session, event, private_details=True, viewer_id=None)
+        sent = await send_event_card(
+            query.message, session, event, private_details=True, viewer_id=None
+        )
+        if sent is not None:
+            await _track(state, sent.message_id)
 
+    # 4. Пагинация
     token = _scope_token(scope)
     has_next = len(events) == 10
     kb = pagination_kb(token, day.isoformat(), category, page_num, has_next)
     if kb is not None:
-        await message.answer(
+        sent_pag = await query.message.answer(
             f"Ещё встречи · {CATEGORY_LABELS.get(category, category)} · "
             f"страница {page_num + 1}:",
             reply_markup=kb,
         )
+        await _track(state, sent_pag.message_id)
