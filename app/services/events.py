@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import Event, EventMessage, User
 from app.errors import CapacityFull, Conflict, DomainError, PastEvent
 from app.keyboards import event_kb, participants_kb
-from app.services.events import _count_booked
 from app.services.notifications import enqueue_refresh, render_card
 from app.services.permissions import can_access_event
 from app.services.signups import SignupService
@@ -41,11 +40,13 @@ async def _safe_edit(message: Message, text: str, kb=None) -> None:
 async def _save_event_message(
     session: AsyncSession, sent_message: Message, event_id: int
 ) -> None:
-    session.add(EventMessage(
-        event_id=event_id,
-        chat_id=sent_message.chat.id,
-        message_id=sent_message.message_id,
-    ))
+    session.add(
+        EventMessage(
+            event_id=event_id,
+            chat_id=sent_message.chat.id,
+            message_id=sent_message.message_id,
+        )
+    )
     await session.flush()
 
 
@@ -60,7 +61,8 @@ async def send_event_card(
     booked = await _count_booked(session, event.id)
     owner = await session.get(User, event.owner_id)
     text = render_card(
-        event, booked,
+        event,
+        booked,
         owner_name=owner.full_name if owner else "",
         owner_username=owner.username if owner else "",
         private_details=private_details,
@@ -100,7 +102,8 @@ async def cb_detail(query: CallbackQuery, session: AsyncSession) -> None:
     booked = await _count_booked(session, event_id)
     owner = await session.get(User, event.owner_id)
     text = render_card(
-        event, booked,
+        event,
+        booked,
         owner_name=owner.full_name if owner else "",
         owner_username=owner.username if owner else "",
         private_details=True,
@@ -160,7 +163,8 @@ async def cb_join(query: CallbackQuery, session: AsyncSession, user) -> None:
         booked = await _count_booked(session, event_id)
         owner = await session.get(User, event.owner_id)
         text = render_card(
-            event, booked,
+            event,
+            booked,
             owner_name=owner.full_name if owner else "",
             owner_username=owner.username if owner else "",
             private_details=True,
@@ -207,7 +211,8 @@ async def cb_cancel(query: CallbackQuery, session: AsyncSession) -> None:
         booked = await _count_booked(session, event_id)
         owner = await session.get(User, event.owner_id)
         text = render_card(
-            event, booked,
+            event,
+            booked,
             owner_name=owner.full_name if owner else "",
             owner_username=owner.username if owner else "",
             private_details=True,
