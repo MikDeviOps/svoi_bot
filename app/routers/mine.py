@@ -3,10 +3,12 @@
 UX:
 - «Это не ваша встреча» → alert.
 - _safe_edit обходит TelegramBadRequest "message is not modified".
+- kick_confirm: query.answer() в начале + refresh в фоне (не таймаутит).
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 import structlog
@@ -35,7 +37,6 @@ router = Router(name="mine")
 
 
 async def _safe_edit(message: Message, text: str, kb=None) -> None:
-    """edit_text без падения, если контент не изменился."""
     try:
         await message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest as exc:
@@ -101,13 +102,13 @@ async def cb_delete_ask(query: CallbackQuery, session: AsyncSession) -> None:
 @router.callback_query(F.data.startswith("deleteconfirm:"))
 async def cb_delete_confirm(query: CallbackQuery, session: AsyncSession) -> None:
     event_id = int(query.data.split(":", 1)[1])
+    await query.answer()   # квитируем сразу
     service = EventService(session)
     try:
         await service.soft_delete(event_id, query.from_user.id)
     except DomainError as exc:
-        await query.answer(exc.user_message, show_alert=True)
+        await query.message.answer(exc.user_message)
         return
-    await query.answer()
     await _safe_edit(query.message, "🗑 Встреча удалена.")
 
 
@@ -130,14 +131,15 @@ async def cb_manage_people(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Это не ваша встреча.", show_alert=True)
         return
 
+    await query.answer()   # квитируем до БД
+
     service = SignupService(session)
     people = await service.list_participants(event_id)
     if not people:
-        await query.answer("Пока никто не записался.", show_alert=True)
+        await _safe_edit(query.message, "Пока никто не записался.", participants_kb(event_id, []))
         return
 
     rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in people]
-    await query.answer()
     await _safe_edit(
         query.message,
         "Кого удалить?",
@@ -180,15 +182,20 @@ async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
         await query.answer("Неверный запрос.", show_alert=True)
         return
     event_id, user_id = int(parts[1]), int(parts[2])
+
+    await query.answer()   # квитируем сразу — иначе "query is too old"
+
     service = SignupService(session)
     try:
         await service.kick(event_id, query.from_user.id, user_id)
     except DomainError as exc:
-        await query.answer(exc.user_message, show_alert=True)
+        await query.message.answer(exc.user_message)
         return
-    await enqueue_refresh(event_id, session, query.bot)
-    await query.answer()
+
     await _safe_edit(query.message, "✅ Участник удалён. Место освобождено.")
+
+    # Refresh — в фоне, чтобы не таймаутить callback
+    asyncio.create_task(enqueue_refresh(event_id, session, query.bot))
 
 
 @router.callback_query(F.data.startswith("kickcancel:"))
@@ -229,9 +236,9 @@ async def cb_edit_field(query: CallbackQuery, state: FSMContext, session: AsyncS
         await query.answer("Это не ваша встреча.", show_alert=True)
         return
 
+    await query.answer()
     await state.update_data(edit_event_id=event_id, edit_field=field)
     await state.set_state(EditEvent.field_value)
-    await query.answer()
     hints = {"date": "ДД.ММ.ГГГГ", "time": "ЧЧ:ММ", "capacity": "1–1000"}
     await query.message.answer(
         f"Введите новое значение ({hints.get(field, 'текст')}):\n/cancel — отмена"

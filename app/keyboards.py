@@ -38,7 +38,6 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 
 def scope_menu(chat_id: int | None = None) -> InlineKeyboardMarkup:
-    """Выбор scope: общая афиша / афиша чата (только в группе)."""
     buttons: list[list[InlineKeyboardButton]] = []
     if chat_id is not None:
         buttons.append([
@@ -54,7 +53,6 @@ def scope_menu(chat_id: int | None = None) -> InlineKeyboardMarkup:
 
 
 def dates_kb(scope_token: str, dates: list[str]) -> InlineKeyboardMarkup:
-    """Кнопки дат ``[['01.11.2025', '02.11.2025'], ...]``."""
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(dates), 2):
         row = []
@@ -72,7 +70,6 @@ def dates_kb(scope_token: str, dates: list[str]) -> InlineKeyboardMarkup:
 def categories_kb(
     scope_token: str, day_iso: str, counts: dict[str, int]
 ) -> InlineKeyboardMarkup:
-    """Кнопки категорий ``[['🎲 Игры (2)', '🍺 Бары (1)'], ...]``."""
     items = [(slug, count) for slug, count in counts.items() if slug in CATEGORY_LABELS]
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(items), 2):
@@ -105,7 +102,6 @@ def pagination_kb(
 
 
 def event_kb(event: Event, booked: int, viewer_id: int | None = None) -> InlineKeyboardMarkup:
-    """Кнопки под карточкой: подробнее, записаться, участники, отмена, удалить."""
     event_id = event.id
     available = event.capacity - booked
 
@@ -213,6 +209,7 @@ def confirm_delete_kb(event_id: int) -> InlineKeyboardMarkup:
 
 
 def participants_kb(event_id: int, participants: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Список участников (kick) + кнопка «← Назад» (detail)."""
     rows = [
         [InlineKeyboardButton(
             text=f"❌ {name[:45]}",
@@ -220,4 +217,7 @@ def participants_kb(event_id: int, participants: list[tuple[int, str]]) -> Inlin
         )]
         for uid, name in participants
     ]
+    rows.append([
+        InlineKeyboardButton(text="← Назад", callback_data=f"detail:{event_id}")
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
