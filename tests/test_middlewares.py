@@ -1,11 +1,10 @@
-"""Тесты UserUpsertMiddleware: race + upsert."""
+"""Тесты UserUpsertMiddleware: create, update, no_race."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
 
 from app.db import User
 from app.middlewares import UserUpsertMiddleware
@@ -31,11 +30,11 @@ async def test_upsert_creates_user(session):
     user = await session.get(User, 123)
     assert user is not None
     assert user.username == "test"
+    assert user.full_name == "Test User"
 
 
 @pytest.mark.asyncio
 async def test_upsert_updates_existing(session):
-    # Создаём пользователя
     session.add(User(tg_id=123, username="old", full_name="Old Name"))
     await session.flush()
 
@@ -53,7 +52,7 @@ async def test_upsert_updates_existing(session):
 
 @pytest.mark.asyncio
 async def test_upsert_no_race(session):
-    """Два upsert подряд от одного tg_id не падают."""
+    """Два upsert подряд от одного tg_id не падают (ON CONFLICT)."""
     mw = UserUpsertMiddleware()
     tg_user = _FakeUser(456, "x", "X")
     data = {"event_from_user": tg_user, "session": session}
@@ -63,3 +62,4 @@ async def test_upsert_no_race(session):
 
     user = await session.get(User, 456)
     assert user is not None
+    assert user.username == "x"
