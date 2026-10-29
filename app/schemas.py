@@ -116,7 +116,13 @@ class EventDraft(BaseModel):
             raise ValidationError(
                 f"Адрес должен быть от {s.address_min_len} до {s.address_max_len} символов."
             )
-        return v
+        # Импорт локальный — чтобы избежать циклов, если locations начнёт зависеть от schemas (сейчас нет).
+        from app.services.locations import normalize_moscow_address
+
+        normalized, error = normalize_moscow_address(v)
+        if error:
+            raise ValidationError(error)
+        return normalized
 
     @field_validator("conditions")
     @classmethod

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from aiogram import Router
 
+from app.routers.admin import router as admin_router
 from app.routers.agenda import router as agenda_router
 from app.routers.create import router as create_router
 from app.routers.events import router as events_router
@@ -24,6 +25,7 @@ def assemble_root_router() -> Router:
     - create, mine: FSM-роутеры (ловят свои состояния).
     - agenda, events: обычные callback/message.
     - group: групповые триггеры.
+    - admin: /stats (только owner_id).
     - fallback: /help и «всё остальное» — последним.
     """
     root = Router(name="root")
@@ -33,5 +35,6 @@ def assemble_root_router() -> Router:
     root.include_router(agenda_router)
     root.include_router(events_router)
     root.include_router(group_router)
+    root.include_router(admin_router)
     root.include_router(fallback_router)
     return root
