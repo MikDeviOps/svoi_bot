@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date as dt_date, time as dt_time, timedelta
+from datetime import date as dt_date
+from datetime import time as dt_time
+from datetime import timedelta
 
 import pytest
 
 from app.errors import ValidationError
 from app.schemas import EventDraft
-
 
 # --- title ---
 
@@ -63,7 +64,8 @@ def test_address_too_short():
 
 def test_address_ok():
     d = EventDraft(address="  ул. Тверская, 1  ")
-    assert d.address == "ул. Тверская, 1"
+    # normalize_moscow_address добавляет «Москва, » если город не указан
+    assert d.address == "Москва, ул. Тверская, 1"
 
 
 # --- conditions ---
