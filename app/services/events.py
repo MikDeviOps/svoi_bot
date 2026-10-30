@@ -18,7 +18,6 @@ from app.schemas import EventDraft, EventView
 
 
 async def _count_booked(session: AsyncSession, event_id: int) -> int:
-    """Сколько записано на событие."""
     result = await session.scalar(
         select(func.count()).select_from(Signup).where(Signup.event_id == event_id)
     )
@@ -59,8 +58,6 @@ def _to_view(event: Event, booked: int, owner: User | None = None) -> EventView:
 
 
 class EventService:
-    """Сервис встреч. Не знает про keyboards/aiogram/notifications."""
-
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -95,6 +92,7 @@ class EventService:
             visibility=draft.visibility,
             source_chat_id=draft.source_chat_id,
             source_chat_title=draft.source_chat_title,
+            photo_file_id=draft.photo_file_id,
         )
         self.session.add(event)
         await self.session.flush()
@@ -103,13 +101,7 @@ class EventService:
         owner = await self.session.get(User, owner_id)
         return _to_view(event, booked=0, owner=owner)
 
-    async def update(
-        self,
-        event_id: int,
-        actor_id: int,
-        field: str,
-        value,
-    ) -> EventView:
+    async def update(self, event_id: int, actor_id: int, field: str, value) -> EventView:
         event = await _get_or_raise(self.session, event_id)
         if event.owner_id != actor_id:
             raise Forbidden("Редактировать встречу может только её создатель.")

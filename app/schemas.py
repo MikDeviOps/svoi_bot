@@ -19,7 +19,9 @@ CHECK-constraint'ы из БД, но с ``user_message`` (понятным тек
 
 from __future__ import annotations
 
-from datetime import date as dt_date, datetime as dt_datetime, time as dt_time
+from datetime import date as dt_date
+from datetime import datetime as dt_datetime
+from datetime import time as dt_time
 from typing import Literal
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -70,7 +72,7 @@ class EventDraft(BaseModel):
     source_chat_id: int | None = None
     source_chat_title: str = ""
     owner_name: str = ""
-    owner_username: str = ""
+    photo_file_id: str = ""
 
     @field_validator("title")
     @classmethod
@@ -159,7 +161,9 @@ class EventDraft(BaseModel):
         )
         if starts_at <= dt_datetime.now(s.timezone):
             raise ValidationError("Встреча должна быть в будущем.")
-        if (self.event_date - dt_datetime.now(s.timezone).date()).days > s.event_horizon_days:
+        if (
+            self.event_date - dt_datetime.now(s.timezone).date()
+        ).days > s.event_horizon_days:
             raise ValidationError(
                 f"Дата должна быть не позже чем через {s.event_horizon_days} дней."
             )

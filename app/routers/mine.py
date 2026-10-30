@@ -7,7 +7,7 @@ from datetime import datetime
 
 import structlog
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -16,10 +16,11 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot_states import EditEvent
-from app.db import Event
+from app.db import Event, EventMessage
 from app.errors import DomainError
 from app.keyboards import confirm_delete_kb, edit_menu_kb, mine_kb, participants_kb
 from app.services.events import EventService
@@ -28,6 +29,8 @@ from app.services.signups import SignupService
 
 logger = structlog.get_logger(__name__)
 router = Router(name="mine")
+
+PAGE_SIZE = 8
 
 
 async def _safe_edit(message: Message, text: str, kb=None) -> None:
@@ -96,13 +99,46 @@ async def cb_delete_ask(query: CallbackQuery, session: AsyncSession) -> None:
 @router.callback_query(F.data.startswith("deleteconfirm:"))
 async def cb_delete_confirm(query: CallbackQuery, session: AsyncSession) -> None:
     event_id = int(query.data.split(":", 1)[1])
-    await query.answer()   # квитируем сразу
+    await query.answer()  # квитируем сразу
+
+    # Проверяем владельца ещё раз — на случай устаревшей кнопки.
+    event = await session.get(Event, event_id)
+    if event is None or event.owner_id != query.from_user.id:
+        await query.answer("Это не ваша встреча.", show_alert=True)
+        return
+
+    # Открепляем карточки и заменяем текст «удалена» — иначе в группах
+    # останутся «мёртвые» карточки с активными кнопками join/cancel.
+    result = await session.execute(
+        select(EventMessage).where(EventMessage.event_id == event_id)
+    )
+    for msg in list(result.scalars().all()):
+        try:
+            await query.bot.unpin_chat_message(
+                chat_id=msg.chat_id, message_id=msg.message_id
+            )
+        except TelegramError as exc:
+            logger.warning("unpin_failed", chat_id=msg.chat_id, error=str(exc))
+        try:
+            await query.bot.edit_message_text(
+                chat_id=msg.chat_id,
+                message_id=msg.message_id,
+                text="🗑 Эта встреча отменена организатором.",
+                reply_markup=None,
+            )
+        except TelegramError:
+            pass
+        await session.delete(msg)
+    await session.commit()
+
     service = EventService(session)
     try:
         await service.soft_delete(event_id, query.from_user.id)
     except DomainError as exc:
         await query.message.answer(exc.user_message)
         return
+    await session.commit()
+
     await _safe_edit(query.message, "🗑 Встреча удалена.")
 
 
@@ -119,25 +155,36 @@ async def cb_delete_cancel(query: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("managepeople:"))
 async def cb_manage_people(query: CallbackQuery, session: AsyncSession) -> None:
-    event_id = int(query.data.split(":", 1)[1])
+    parts = query.data.split(":")
+    event_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
+
     event = await session.get(Event, event_id)
     if event is None or event.owner_id != query.from_user.id:
         await query.answer("Это не ваша встреча.", show_alert=True)
         return
 
-    await query.answer()   # квитируем до БД
+    await query.answer()  # квитируем до БД
 
     service = SignupService(session)
     people = await service.list_participants(event_id)
-    if not people:
-        await _safe_edit(query.message, "Пока никто не записался.", participants_kb(event_id, []))
+    rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in people]
+
+    if not rows:
+        await _safe_edit(
+            query.message,
+            "Пока никто не записался.",
+            participants_kb(event_id, [], page=0, total=1),
+        )
         return
 
-    rows = [(p.user_id, p.telegram_name or str(p.user_id)) for p in people]
+    total_pages = max(1, (len(rows) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = min(max(0, page), total_pages - 1)
+    chunk = rows[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     await _safe_edit(
         query.message,
-        "Кого удалить?",
-        participants_kb(event_id, rows),
+        f"Участники «{event.title}» · стр. {page + 1}/{total_pages}",
+        participants_kb(event_id, chunk, page=page, total=total_pages),
     )
 
 
@@ -177,7 +224,7 @@ async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
         return
     event_id, user_id = int(parts[1]), int(parts[2])
 
-    await query.answer()   # квитируем сразу — иначе "query is too old"
+    await query.answer()  # квитируем сразу — иначе "query is too old"
 
     service = SignupService(session)
     try:
@@ -186,6 +233,7 @@ async def cb_kick_confirm(query: CallbackQuery, session: AsyncSession) -> None:
         await query.message.answer(exc.user_message)
         return
 
+    await session.commit()
     await _safe_edit(query.message, "✅ Участник удалён. Место освобождено.")
 
     # Refresh — в фоне с НОВОЙ сессией (сессия хендлера закроется после return)
@@ -252,6 +300,8 @@ async def step_edit_value(message: Message, state: FSMContext, session: AsyncSes
         if field == "date":
             d = datetime.strptime(raw, "%d.%m.%Y").date()
             event = await session.get(Event, event_id)
+            if event is None:
+                raise DomainError("Встреча не найдена.")
             starts_at = datetime.combine(d, event.starts_at.time()).replace(
                 tzinfo=event.starts_at.tzinfo
             )
@@ -259,6 +309,8 @@ async def step_edit_value(message: Message, state: FSMContext, session: AsyncSes
         elif field == "time":
             t = datetime.strptime(raw, "%H:%M").time()
             event = await session.get(Event, event_id)
+            if event is None:
+                raise DomainError("Встреча не найдена.")
             starts_at = datetime.combine(event.starts_at.date(), t).replace(
                 tzinfo=event.starts_at.tzinfo
             )
@@ -272,6 +324,7 @@ async def step_edit_value(message: Message, state: FSMContext, session: AsyncSes
         await message.answer(f"❗ {msg} Попробуйте ещё раз или /cancel.")
         return
 
+    await session.commit()
     await state.clear()
     await enqueue_refresh(event_id, session, message.bot)
     await message.answer("✅ Встреча обновлена.")

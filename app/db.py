@@ -127,6 +127,7 @@ class Event(Base, TimestampMixin, SoftDeleteMixin):
         BigInteger, ForeignKey("known_groups.chat_id", ondelete="SET NULL"), nullable=True
     )
     source_chat_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    photo_file_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
 
     owner: Mapped[User] = relationship(back_populates="events_owned")
     signups: Mapped[list["Signup"]] = relationship(

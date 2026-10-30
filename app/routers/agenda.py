@@ -19,6 +19,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.keyboards import categories_kb, dates_kb, pagination_kb, scope_menu
+from app.labels import CATEGORY_LABELS
 from app.services.agenda import AgendaService
 
 logger = structlog.get_logger(__name__)
@@ -234,7 +235,6 @@ async def _show_event_page(
     state: FSMContext,
 ) -> None:
     from app.routers.events import send_event_card
-    from app.services.notifications import CATEGORY_LABELS
 
     await _delete_agenda_messages(query.message, state)
 
@@ -258,6 +258,12 @@ async def _show_event_page(
             query.message, session, event, private_details=True, viewer_id=None
         )
         await _track(state, sent.message_id)
+
+    # Коммитим event_messages, иначе cleanup-worker их не увидит.
+    try:
+        await session.commit()
+    except Exception:
+        logger.exception("agenda_commit_failed")
 
     token = _scope_token(scope)
     has_next = len(events) == 10

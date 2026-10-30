@@ -1,6 +1,15 @@
-"""Парсинг start-payload: join_123, cancel_123, detail_123, participants_123, create_-100.
+"""Парсинг start-payload → typed action.
 
-Возвращает типизированный ``DeepLink`` или ``None``, если payload не распознан.
+Deep-link, который бот получает в ``/start <payload>``:
+- ``join_<id>``         → записаться на встречу
+- ``cancel_<id>``       → отменить запись
+- ``participants_<id>`` → список участников
+- ``detail_<id>``       → карточка встречи (как ``event_``, но без фото)
+- ``event_<id>``        → карточка встречи с фото (для group_event_url_kb)
+- ``create_<chat_id>``  → продолжить создание встречи в личке
+- ``apply_<chat_id>``   → заявка на регистрацию группы
+
+Модуль не знает про aiogram и БД — только разбирает строку.
 """
 
 from __future__ import annotations
@@ -9,47 +18,49 @@ from dataclasses import dataclass
 from typing import Literal
 
 Action = Literal[
-    "join", "cancel", "detail", "participants", "create", "none",
+    "join",
+    "cancel",
+    "participants",
+    "detail",
+    "event",
+    "create",
+    "apply",
 ]
+
+# Порядок важен: `event_` должен идти до любого гипотетического `e_`,
+# но у нас префиксы не пересекаются — порядок не критичен.
+_PREFIXES: dict[str, Action] = {
+    "join_": "join",
+    "cancel_": "cancel",
+    "participants_": "participants",
+    "detail_": "detail",
+    "event_": "event",
+    "create_": "create",
+    "apply_": "apply",
+}
 
 
 @dataclass(frozen=True)
-class DeepLink:
+class Deeplink:
     action: Action
-    event_id: int | None = None
-    chat_id: int | None = None
+    target_id: int
 
 
-_PREFIXES: tuple[tuple[str, Action], ...] = (
-    ("join_", "join"),
-    ("cancel_", "cancel"),
-    ("detail_", "detail"),
-    ("participants_", "participants"),
-)
-
-
-def parse_start_payload(payload: str | None) -> DeepLink:
-    """Разобрать payload после ``/start``.
-
-    :param payload: строка после ``/start`` (может быть пустой/None).
-    :return: ``DeepLink``; ``action="none"`` — payload не распознан.
-    """
+def parse(payload: str) -> Deeplink | None:
+    """Разобрать payload. ``None`` — если payload не наш или битый."""
     if not payload:
-        return DeepLink(action="none")
-
-    for prefix, action in _PREFIXES:
+        return None
+    for prefix, action in _PREFIXES.items():
         if payload.startswith(prefix):
             try:
-                event_id = int(payload[len(prefix):])
+                target = int(payload[len(prefix):])
             except ValueError:
-                return DeepLink(action="none")
-            return DeepLink(action=action, event_id=event_id)
-
-    if payload.startswith("create_"):
-        try:
-            chat_id = int(payload[len("create_"):])
-        except ValueError:
-            return DeepLink(action="none")
-        return DeepLink(action="create", chat_id=chat_id)
-
-    return DeepLink(action="none")
+                return None
+            # create_<chat_id> — только групповой чат (отрицательный id).
+            if action == "create" and target >= 0:
+                return None
+            # apply_<chat_id> — тоже только группа.
+            if action == "apply" and target >= 0:
+                return None
+            return Deeplink(action=action, target_id=target)
+    return None

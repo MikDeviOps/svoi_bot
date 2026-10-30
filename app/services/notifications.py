@@ -1,12 +1,4 @@
-"""Рендер карточек и refresh сообщений в чатах.
-
-- render_card — escape() на всех пользовательских полях.
-- CATEGORY_LABELS — из app/labels.py.
-- _refresh — try/except: skip 'message is not modified', TelegramRetryAfter
-  → sleep(retry_after) + продолжение, throttle 0.3 сек между карточками.
-- enqueue_refresh — с ПЕРЕДАННОЙ сессией (await в хендлере).
-- enqueue_refresh_safe — с НОВОЙ сессией (для asyncio.create_task).
-"""
+"""Рендер карточек и refresh сообщений. + notify_source_group."""
 
 from __future__ import annotations
 
@@ -16,7 +8,7 @@ from html import escape
 
 import structlog
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,8 +19,7 @@ from app.services.events import _count_booked
 logger = structlog.get_logger(__name__)
 
 _REFRESH_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-_THROTTLE_SECONDS = 0.3  # между edit_message_text
+_THROTTLE_SECONDS = 0.3
 
 
 def _format_datetime(event: Event) -> str:
@@ -45,16 +36,10 @@ def _owner_display(event: Event, owner_name: str = "", owner_username: str = "")
 
 
 def render_card(
-    event: Event,
-    booked: int,
-    *,
-    owner_name: str = "",
-    owner_username: str = "",
-    private_details: bool = True,
+    event: Event, booked: int, *, owner_name: str = "", owner_username: str = "", private_details: bool = True,
 ) -> str:
     available = max(0, event.capacity - booked)
     category = CATEGORY_LABELS.get(event.category, "🎭 Другое")
-
     lines = [
         f"📍 <b>{escape(event.title)}</b>",
         f"📅 {_format_datetime(event)}",
@@ -63,19 +48,15 @@ def render_card(
     ]
     if event.description:
         lines.append(f"📝 Описание: {escape(event.description)}")
-
     organizer = _owner_display(event, owner_name, owner_username)
     lines.append(f"👤 Организатор: {escape(organizer)}")
-
     if event.source_chat_title:
         lines.append(f"🏘 Группа: {escape(event.source_chat_title)}")
-
     if private_details:
         lines.append(f"🏠 Адрес: {escape(event.address)}")
         lines.append(f"📋 Условия: {escape(event.conditions)}")
     else:
         lines.append("🔒 Точный адрес и условия доступны в личном чате с ботом.")
-
     return "\n".join(lines)
 
 
@@ -95,73 +76,62 @@ async def _refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
         event = await session.get(Event, event_id)
         if event is None or event.deleted_at is not None:
             return
-
         booked = await _count_booked(session, event_id)
         owner = await session.get(User, event.owner_id)
-        owner_name = owner.full_name if owner else ""
-        owner_username = owner.username if owner else ""
-
         text = render_card(
-            event,
-            booked,
-            owner_name=owner_name,
-            owner_username=owner_username,
+            event, booked,
+            owner_name=owner.full_name if owner else "",
+            owner_username=owner.username if owner else "",
             private_details=True,
         )
-
         result = await session.execute(
             select(EventMessage).where(EventMessage.event_id == event_id)
         )
-        messages = list(result.scalars().all())
-        for msg in messages:
+        for msg in list(result.scalars().all()):
             try:
-                await bot.edit_message_text(
-                    chat_id=msg.chat_id,
-                    message_id=msg.message_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
-            except TelegramBadRequest as exc:
-                err = str(exc)
-                if "message is not modified" in err:
-                    continue
-                if "message to edit not found" in err:
-                    continue
-                logger.info(
-                    "refresh_failed",
-                    event_id=event_id,
-                    chat_id=msg.chat_id,
-                    message_id=msg.message_id,
-                    error=err,
-                )
-            except TelegramRetryAfter as exc:
-                logger.info(
-                    "refresh_flood",
-                    event_id=event_id,
-                    chat_id=msg.chat_id,
-                    retry_after=exc.retry_after,
-                )
-                await asyncio.sleep(exc.retry_after)
-                # пробуем ещё раз
-                try:
+                if event.photo_file_id:
+                    await bot.edit_message_caption(
+                        chat_id=msg.chat_id,
+                        message_id=msg.message_id,
+                        caption=text[:1024],
+                        reply_markup=None,
+                    )
+                else:
                     await bot.edit_message_text(
                         chat_id=msg.chat_id,
                         message_id=msg.message_id,
                         text=text,
                         parse_mode="HTML",
                     )
-                except Exception as exc2:
-                    logger.info("refresh_failed", event_id=event_id, error=str(exc2))
-
+            except TelegramBadRequest as exc:
+                err = str(exc)
+                if "message is not modified" in err or "message to edit not found" in err:
+                    continue
+                logger.info("refresh_failed", event_id=event_id, chat_id=msg.chat_id, error=err)
             await asyncio.sleep(_THROTTLE_SECONDS)
 
 
 async def enqueue_refresh(event_id: int, session: AsyncSession, bot: Bot) -> None:
-    """Refresh с переданной сессией (await в хендлере)."""
     await _refresh(event_id, session, bot)
 
 
 async def enqueue_refresh_safe(event_id: int, bot: Bot) -> None:
-    """Refresh с новой сессией (для фоновых asyncio.create_task)."""
     async with async_session_factory() as session:
         await _refresh(event_id, session, bot)
+
+
+async def notify_source_group(bot: Bot, event: Event, user, available: int, *, joined: bool) -> None:
+    """Уведомить исходную группу о join/cancel."""
+    if event.source_chat_id is None:
+        return
+    action = "записался(ась)" if joined else "отменил(а) запись"
+    icon = "✅" if joined else "❌"
+    text = (
+        f"{icon} <a href=\"tg://user?id={user.id}\">{escape(user.full_name or str(user.id))}</a> "
+        f"{action} на встречу «{escape(event.title)}».\n"
+        f"👥 Свободно мест: {available}."
+    )
+    try:
+        await bot.send_message(chat_id=event.source_chat_id, text=text, parse_mode="HTML")
+    except TelegramError as exc:
+        logger.warning("notify_source_group_failed", event_id=event.id, error=str(exc))

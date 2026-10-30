@@ -1,13 +1,10 @@
-"""FSM-состояния для создания и редактирования встречи."""
-
-from __future__ import annotations
+"""FSM-состояния для сценариев создания и редактирования встречи."""
 
 from aiogram.fsm.state import State, StatesGroup
 
 
 class CreateEvent(StatesGroup):
-    """FSM создания: title → description → category → date → time → address → conditions → capacity → visibility → group."""
-
+    """Шаги создания встречи: group → title → ... → photo → save."""
     group = State()
     title = State()
     description = State()
@@ -18,9 +15,9 @@ class CreateEvent(StatesGroup):
     conditions = State()
     capacity = State()
     visibility = State()
+    photo = State()
 
 
 class EditEvent(StatesGroup):
-    """FSM редактирования: выбор поля → ввод значения."""
-
+    """Шаги редактирования: выбор поля → ввод значения."""
     field_value = State()
