@@ -1,0 +1,13 @@
+# app/application/ports/cache.py
+from __future__ import annotations
+
+from typing import Optional, Protocol
+
+
+class CachePort(Protocol):
+    """Абстракция над кэшем. Реализация — Redis, в тестах — in-memory."""
+
+    async def get(self, key: str) -> Optional[str]: ...
+    async def set(self, key: str, value: str, *, ttl: int) -> None: ...
+    async def delete(self, key: str) -> None: ...
+    async def exists(self, key: str) -> bool: ...

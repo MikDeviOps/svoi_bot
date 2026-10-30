@@ -1,122 +1,84 @@
-"""Конфигурация приложения.
-
-Единственный источник ENV. Отсюда берутся:
-- ``settings`` — pydantic-settings (BOT_TOKEN, DATABASE_URL, лимиты, TZ);
-- ``configure_logging()`` — structlog JSON;
-- ``now()`` — TZ-aware текущее время (единственное место в проекте).
-
-"""
-
+# app/config.py
 from __future__ import annotations
 
-import logging
-import sys
-from datetime import datetime
-from functools import lru_cache
-from typing import Literal
-from zoneinfo import ZoneInfo
+from typing import List
 
-import structlog
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Настройки из ENV/`.env`. Все поля с дефолтами — приложение стартует без секретов."""
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        case_sensitive=False,
     )
 
-    # --- Telegram ---
-    bot_token: str = ""
-    owner_id: int = 0
+    # Bot
+    BOT_TOKEN: str = Field(..., description="Telegram Bot Token")
 
-    # --- База данных ---
-    database_url: str = (
-        "postgresql+asyncpg://svoi:svoi@localhost:5432/svoi"
-    )
-    database_url_test: str = ""  # для тестов; если пусто — используется database_url
-
-    # --- Время ---
-    tz: str = "Europe/Moscow"
-
-    # --- Лимиты предметной области (синхронизированы с CHECK в БД) ---
-    title_min_len: int = 3
-    title_max_len: int = 100
-    description_max_len: int = 1000
-    address_min_len: int = 5
-    address_max_len: int = 250
-    conditions_min_len: int = 2
-    conditions_max_len: int = 500
-    capacity_min: int = 1
-    capacity_max: int = 1000
-    event_horizon_days: int = 365
-
-    # --- Логирование ---
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
-    log_json: bool = True  # False — человекочитаемо (dev), True — JSON (prod)
+    # PostgreSQL
+    POSTGRES_USER: str = "svoi_user"
+    POSTGRES_PASSWORD: str = "svoi_password"
+    POSTGRES_DB: str = "svoi_db"
+    POSTGRES_HOST: str = "postgres"
+    POSTGRES_PORT: int = 5432
 
     @property
-    def timezone(self) -> ZoneInfo:
-        return ZoneInfo(self.tz)
+    def database_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
 
     @property
-    def test_database_url(self) -> str:
-        """URL для тестов: ``DATABASE_URL_TEST`` или ``DATABASE_URL`` с суффиксом ``_test``."""
-        if self.database_url_test:
-            return self.database_url_test
-        # postgresql+asyncpg://user:pass@host:port/db → .../db_test
-        base, _, _db = self.database_url.rpartition("/")
-        return f"{base}/svoi_test"
+    def sync_database_url(self) -> str:
+        # Для Alembic миграций (psycopg2)
+        return (
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
 
+    # Redis
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = Field(..., description="Redis password")
+    REDIS_FSM_DB: int = 0
+    REDIS_CACHE_DB: int = 1
 
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
+    @property
+    def redis_fsm_url(self) -> str:
+        return (
+            f"redis://:{self.REDIS_PASSWORD}"
+            f"@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_FSM_DB}"
+        )
 
+    @property
+    def redis_cache_url(self) -> str:
+        return (
+            f"redis://:{self.REDIS_PASSWORD}"
+            f"@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_CACHE_DB}"
+        )
 
-def configure_logging() -> None:
-    """structlog: JSON в prod, красивый вывод в dev. Уровень — из Settings."""
-    settings = get_settings()
-    level = getattr(logging, settings.log_level)
-
-    timestamper = structlog.processors.TimeStamper(fmt="iso", utc=False)
-    shared_processors = [
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        timestamper,
-    ]
-
-    if settings.log_json:
-        renderer = structlog.processors.JSONRenderer(ensure_ascii=False)
-    else:
-        renderer = structlog.dev.ConsoleRenderer(colors=True)
-
-    structlog.configure(
-        processors=[
-            *shared_processors,
-            structlog.processors.format_exc_info,
-            renderer,
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(level),
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
-        cache_logger_on_first_use=True,
+    # Business Logic
+    SUPPORT_CHAT_ID: int = Field(..., description="Numeric ID of the support chat")
+    OWNERS: List[int] = Field(
+        default=[490290960, 788430312],
+        description="Comma-separated list of owner IDs",
     )
+    MIN_GROUP_SIZE: int = 20
 
-    logging.basicConfig(
-        format="%(message)s",
-        level=level,
-        stream=sys.stdout,
-        force=True,
-    )
+    @field_validator("OWNERS", mode="before")
+    @classmethod
+    def parse_owners(cls, v):
+        if isinstance(v, str):
+            return [int(x.strip()) for x in v.split(",") if x.strip().isdigit()]
+        if isinstance(v, list):
+            return [int(x) for x in v]
+        return v
+
+    # Legacy SQLite path for migration
+    LEGACY_SQLITE_PATH: str = "svoi.db"
 
 
-def now() -> datetime:
-    """Единственное место, где берётся «сейчас». TZ-aware, Europe/Moscow по умолчанию."""
-    return datetime.now(get_settings().timezone)
+settings = Settings()
