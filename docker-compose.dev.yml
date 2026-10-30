@@ -1,7 +1,0 @@
-services:
-  postgres:
-    ports:
-      - "5432:5432"            # psql с хоста
-  bot:
-    volumes:
-      - ./app:/app/app         # hot-reload кода
