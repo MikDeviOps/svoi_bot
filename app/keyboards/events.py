@@ -36,10 +36,10 @@ def event_keyboard(event: dict, user_id: int | None = None) -> InlineKeyboardMar
             InlineKeyboardButton(text="❌ Отменить запись", callback_data=f"cancel:{event_id}", style="danger"),
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"deleteask:{event_id}", style="danger")
         ])
-        # Инструменты управления тоже рядом
+        # Инструменты управления — переименовали для ясности
         buttons.append([
             InlineKeyboardButton(text="✏️ Изменить", callback_data=f"editmenu:{event_id}", style="primary"),
-            InlineKeyboardButton(text="⚙️ Участники", callback_data=f"managepeople:{event_id}:0", style="primary")
+            InlineKeyboardButton(text="⚙️ Управление", callback_data=f"managepeople:{event_id}:0", style="primary")
         ])
     else:
         # Для обычного пользователя кнопка отмены одна, во всю ширину
