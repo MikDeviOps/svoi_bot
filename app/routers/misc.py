@@ -15,17 +15,17 @@ async def cmd_chatid(message: Message):
     """ID текущего чата (только для владельцев)."""
     chat = message.chat
     if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
-        await message.reply_text("Напиши /chatid в главной группе СВОИ.")
+        await message.answer("Напиши /chatid в главной группе СВОИ.")
         return
     
-    await message.reply_text(f"🆔 ID группы «{chat.title}»: `{chat.id}`")
+    await message.answer(f"🆔 ID группы «{chat.title}»: `{chat.id}`")
 
 
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):
     """Свой Telegram ID."""
     if message.chat.type == ChatType.PRIVATE:
-        await message.reply_text(f"Ваш Telegram ID: {message.from_user.id}")
+        await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
 
 
 @router.callback_query(F.data == "support:verify")

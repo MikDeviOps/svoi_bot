@@ -12,7 +12,7 @@ router = Router(name="dashboard")
 @router.message(Command("stats"), IsOwner())
 async def cmd_stats(message: Message, session):
     stats = await get_platform_stats(session)
-    await message.reply_text(
+    await message.answer(
         "📊 Статистика платформы СВОИ:\n\n"
         f"📅 Всего встреч: {stats['total_events']}\n"
         f"✍️ Всего записей: {stats['total_signups']}\n"

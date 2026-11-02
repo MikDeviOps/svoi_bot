@@ -27,7 +27,7 @@ async def cmd_rating(message: Message, session: AsyncSession):
         )
     )).scalar() or 0
 
-    await message.reply_text(
+    await message.answer(
         "⭐ Активность в СВОИ\n"
         f"Создано встреч: {created}\n"
         f"Текущих записей: {signed}\n"
@@ -40,7 +40,7 @@ async def cmd_rating(message: Message, session: AsyncSession):
 @router.message(Command("grouprating"))
 async def cmd_grouprating(message: Message, session: AsyncSession):
     if message.chat.type not in ("group", "supergroup"):
-        await message.reply_text("Команда /grouprating доступна в группе.")
+        await message.answer("Команда /grouprating доступна в группе.")
         return
 
     chat_id = message.chat.id
@@ -54,7 +54,7 @@ async def cmd_grouprating(message: Message, session: AsyncSession):
         .where(Event.source_chat_id == chat_id)
     )).scalar() or 0
 
-    await message.reply_text(
+    await message.answer(
         f"🏠 Активность чата «{message.chat.title}»\n"
         f"Создано встреч: {created}\n"
         f"Текущих записей: {signed}\n\n"
@@ -104,15 +104,15 @@ def _organizer_keyboard(rows, page: int, total: int) -> InlineKeyboardMarkup:
 @router.message(Command("organizer"))
 async def cmd_organizer(message: Message, session: AsyncSession):
     if message.chat.type != "private":
-        await message.reply_text("История организаторов доступна в личном чате с ботом.")
+        await message.answer("История организаторов доступна в личном чате с ботом.")
         return
 
     total, rows = await _organizer_rows(session, 0)
     if not rows:
-        await message.reply_text("Пока никто не создавал встречи.")
+        await message.answer("Пока никто не создавал встречи.")
         return
 
-    await message.reply_text(
+    await message.answer(
         f"📊 История организаторов\nВсего организаторов: {total}\nВыберите человека:",
         reply_markup=_organizer_keyboard(rows, 0, total),
     )
