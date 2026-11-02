@@ -6,27 +6,39 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
-    expose: ["5432"]
+      start_period: 10s
+    expose:
+      - "5432"
+    networks:
+      - svoi-network
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}", "--maxmemory-policy", "noeviction"]
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-    volumes: [redisdata:/data]
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
-    expose: ["6379"]
+      start_period: 5s
+    expose:
+      - "6379"
+    networks:
+      - svoi-network
 
   migrator:
     build: .
@@ -36,8 +48,11 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres:
+        condition: service_healthy
     restart: "no"
+    networks:
+      - svoi-network
 
   bot:
     build: .
@@ -47,13 +62,27 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      DATA_DIR: /data
     depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-      migrator: { condition: service_completed_successfully }
-    volumes: [botdata:/data]
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    volumes:
+      - botdata:/data
+    networks:
+      - svoi-network
 
 volumes:
   pgdata:
+    driver: local
   redisdata:
+    driver: local
   botdata:
+    driver: local
+
+networks:
+  svoi-network:
+    driver: bridge
