@@ -5,7 +5,10 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeChat
+from aiogram.types import (
+    BotCommand, BotCommandScopeAllPrivateChats,
+    BotCommandScopeAllGroupChats, BotCommandScopeChat, Update,
+)
 
 from app.config import settings
 from app.db.engine import dispose_engine
@@ -28,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 
 async def on_startup(bot: Bot):
-    """Настройка команд бота при запуске."""
     logger.info("Bot started. Setting up commands...")
 
     private_commands = [
@@ -50,7 +52,6 @@ async def on_startup(bot: Bot):
     ]
     await bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
 
-    # Команды для каждого владельца
     owner_commands = private_commands + [
         BotCommand(command="admin", description="Панель владельца"),
         BotCommand(command="base", description="База участников"),
@@ -63,19 +64,17 @@ async def on_startup(bot: Bot):
         try:
             await bot.set_my_commands(owner_commands, scope=BotCommandScopeChat(chat_id=owner_id))
         except Exception:
-            logger.exception("Не удалось настроить личное меню владельца %s", owner_id)
+            logger.info("Владелец %s ещё не запускал бота. Меню будет применено после первого /start.", owner_id)
 
     logger.info("Bot commands configured successfully.")
 
 
 async def on_shutdown(bot: Bot):
-    """Очистка ресурсов при остановке."""
     logger.info("Bot shutting down...")
     await dispose_engine()
 
 
 async def periodic_cleanup(bot: Bot):
-    """Фоновая задача: очистка карточек завершившихся встреч каждые 10 минут."""
     await asyncio.sleep(15)
     while True:
         try:
@@ -85,8 +84,8 @@ async def periodic_cleanup(bot: Bot):
         await asyncio.sleep(600)
 
 
-async def handle_error(update, exception):
-    """Обработчик ошибок Telegram."""
+async def handle_error(event: Update, exception: Exception):
+    """Обработчик ошибок Telegram (aiogram 3.x сигнатура)."""
     logger.error("Ошибка обработчика Telegram: %s", exception, exc_info=exception)
     return True
 
@@ -113,7 +112,6 @@ async def main():
     dp.include_router(participants.router)
     dp.include_router(management.router)
 
-    # Специализированные роутеры
     dp.include_router(reputation.router)
     dp.include_router(dashboard.router)
     dp.include_router(directory.router)
@@ -121,18 +119,13 @@ async def main():
     dp.include_router(reviews.router)
     dp.include_router(misc.router)
 
-    # Администрирование и группы
     dp.include_router(admin.router)
     dp.include_router(groups_reg.router)
-
-    # События чата
     dp.include_router(chat_events.router)
 
     # Хуки
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-
-    # Обработчик ошибок
     dp.errors.register(handle_error)
 
     # Запуск

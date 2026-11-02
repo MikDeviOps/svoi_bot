@@ -2,11 +2,11 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
-from sqlalchemy import select, func, update, delete
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
-    Event, GroupApplication, EventMessage, Signup, OrganizerStatReset,
+    Event, GroupApplication, Signup, OrganizerStatReset,
 )
 from app.services.events import event_with_count, event_card_text
 from app.keyboards.events import private_event_keyboard
@@ -21,7 +21,7 @@ router = Router(name="admin")
 @router.message(Command("mine"))
 async def cmd_mine(message: Message, session: AsyncSession):
     if message.chat.type != "private":
-        await message.reply_text("Команда /mine доступна в личном чате с ботом.")
+        await message.answer("Команда /mine доступна в личном чате с ботом.")
         return
 
     stmt = (
@@ -33,15 +33,19 @@ async def cmd_mine(message: Message, session: AsyncSession):
     events = (await session.execute(stmt)).scalars().all()
 
     if not events:
-        await message.reply_text("У вас пока нет предстоящих встреч. /create")
+        await message.answer("У вас пока нет предстоящих встреч. /create")
         return
 
-    await message.reply_text("Ваши встречи:")
+    await message.answer("Ваши встречи:")
     for event_model in events:
         event = await event_with_count(session, event_model.id)
         text = event_card_text(event, private_details=True)
         if event["photo_file_id"]:
-            await message.answer_photo(photo=event["photo_file_id"], caption=text[:1024], reply_markup=private_event_keyboard(event, message.from_user.id))
+            await message.answer_photo(
+                photo=event["photo_file_id"],
+                caption=text[:1024],
+                reply_markup=private_event_keyboard(event, message.from_user.id),
+            )
         else:
             await message.answer(text, reply_markup=private_event_keyboard(event, message.from_user.id))
 
@@ -49,10 +53,10 @@ async def cmd_mine(message: Message, session: AsyncSession):
 @router.message(Command("admin"), IsOwner())
 async def cmd_admin(message: Message, session: AsyncSession):
     if message.chat.type != "private":
-        await message.reply_text("⛔ Панель доступна только в личном чате.")
+        await message.answer("⛔ Панель доступна только в личном чате.")
         return
 
-    await message.reply_text(
+    await message.answer(
         "🛡 Управление платформой СВОИ:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏘 Зарегистрированные группы", callback_data="owner:approvedgroups")],
@@ -66,7 +70,7 @@ async def cmd_admin(message: Message, session: AsyncSession):
     if not events:
         return
 
-    await message.reply_text("🛡 Управление встречами (последние 30):")
+    await message.answer("🛡 Управление встречами (последние 30):")
     for event_model in events:
         event = await event_with_count(session, event_model.id)
         text = (
@@ -74,7 +78,7 @@ async def cmd_admin(message: Message, session: AsyncSession):
             f"🏘 {event['source_chat_title'] or 'из общей афиши'} · {event['starts_at'].strftime('%d.%m.%Y %H:%M')}\n"
             f"👤 {event['owner_name']}"
         )
-        await message.reply_text(
+        await message.answer(
             text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="👥 Участники", callback_data=f"adminpeople:{event['id']}")],
@@ -93,10 +97,10 @@ async def cmd_groups(message: Message, session: AsyncSession):
     applications = (await session.execute(stmt)).scalars().all()
 
     if not applications:
-        await message.reply_text("📋 Заявок на регистрацию пока нет.")
+        await message.answer("📋 Заявок на регистрацию пока нет.")
         return
 
-    await message.reply_text(f"📋 Заявки на регистрацию ({len(applications)}):")
+    await message.answer(f"📋 Заявки на регистрацию ({len(applications)}):")
     for app in applications:
         text = (
             f"🏘 {app.title}\n"
@@ -105,7 +109,7 @@ async def cmd_groups(message: Message, session: AsyncSession):
             f"ID: {app.chat_id}\n"
             f"📝 {app.description or 'без описания'}"
         )
-        await message.reply_text(
+        await message.answer(
             text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"groupreview:{app.chat_id}:approve")],
@@ -116,7 +120,7 @@ async def cmd_groups(message: Message, session: AsyncSession):
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.reply_text(
+    await message.answer(
         "❓ Помощь по боту СВОИ:\n\n"
         "📅 /vstrechi — афиша встреч\n"
         "➕ /create — создать встречу\n"
@@ -200,7 +204,6 @@ async def cb_group_review(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("adminpeople:"), IsOwner())
 async def cb_admin_people(callback: CallbackQuery, session: AsyncSession):
-    """Переиспользуем manage_participants из management.py."""
     await callback.answer()
     try:
         event_id = int(callback.data.split(":")[1])

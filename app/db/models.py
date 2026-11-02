@@ -42,7 +42,7 @@ class Event(Base, TimestampMixin):
     messages: Mapped[list["EventMessage"]] = relationship(back_populates="event", cascade="all, delete-orphan")
 
 
-class Signup(TimestampMixin):
+class Signup(Base, TimestampMixin):
     __tablename__ = "signups"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
