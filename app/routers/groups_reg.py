@@ -20,12 +20,12 @@ router = Router(name="groups_reg")
 async def cmd_apply_group(message: Message, state: FSMContext, session: AsyncSession):
     """Начало регистрации группы."""
     if message.chat.type != "private":
-        await message.reply_text("Регистрация группы доступна только в личном чате с ботом.")
+        await message.answer("Регистрация группы доступна только в личном чате с ботом.")
         return
 
     # Проверка подписки на поддерживающий чат
     if not await has_support_membership(message.bot, message.from_user.id):
-        await message.reply_text(
+        await message.answer(
             "🔒 Для регистрации группы необходимо вступить в главную группу СВОИ.",
             reply_markup=subscription_prompt()
         )
@@ -38,13 +38,13 @@ async def cmd_apply_group(message: Message, state: FSMContext, session: AsyncSes
 
     if chat_id:
         await state.update_data(target_chat_id=chat_id)
-        await message.reply_text(
+        await message.answer(
             f"📝 Вы начали регистрацию группы (ID: `{chat_id}`).\n"
             f"Опишите ваш чат: тематика, количество участников, правила. (До 1000 символов).\n"
             f"Для отмены введите /cancel"
         )
     else:
-        await message.reply_text(
+        await message.answer(
             "📝 Чтобы зарегистрировать группу, используйте команду /applygroup или нажмите кнопку в чате группы.\n"
             f"Опишите ваш чат: тематика, количество участников, правила. (До 1000 символов).\n"
             f"Для отмены введите /cancel"
@@ -57,7 +57,7 @@ async def process_group_description(message: Message, state: FSMContext, session
     """Обработка описания группы и создание заявки."""
     desc = message.text.strip()
     if len(desc) > 1000:
-        await message.reply_text("❗ Описание слишком длинное (макс. 1000 символов). Попробуйте ещё раз:")
+        await message.answer("❗ Описание слишком длинное (макс. 1000 символов). Попробуйте ещё раз:")
         return
 
     data = await state.get_data()
@@ -65,7 +65,7 @@ async def process_group_description(message: Message, state: FSMContext, session
 
     # Если chat_id не был передан, попросим указать его или получим из контекста (упрощённо: просим пользователя указать)
     if not target_chat_id:
-        await message.reply_text(
+        await message.answer(
             "Пожалуйста, укажите ID группы или используйте кнопку регистрации прямо из этой группы.\n"
             "Заявка отменена.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu:home")]])
@@ -83,7 +83,7 @@ async def process_group_description(message: Message, state: FSMContext, session
 
     if existing:
         status_text = "уже одобрена" if existing.status == "approved" else "уже находится на рассмотрении"
-        await message.reply_text(f"⚠️ Заявка для этой группы {status_text}.")
+        await message.answer(f"⚠️ Заявка для этой группы {status_text}.")
         await state.clear()
         return
 
@@ -101,7 +101,7 @@ async def process_group_description(message: Message, state: FSMContext, session
     session.add(new_app)
     await state.clear()
 
-    await message.reply_text(
+    await message.answer(
         "✅ Ваша заявка на регистрацию группы успешно отправлена!\n"
         "Владелец бота рассмотрит её в ближайшее время. Вы получите уведомление о решении."
     )
@@ -117,4 +117,4 @@ async def cmd_cancel_reg(message: Message, state: FSMContext):
     if current_state is None:
         return
     await state.clear()
-    await message.reply_text("❌ Регистрация группы отменена.")
+    await message.answer("❌ Регистрация группы отменена.")

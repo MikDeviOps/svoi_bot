@@ -47,7 +47,7 @@ async def _send_base_page(target, total: int, participants, page: int):
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=keyboard)
     else:
-        await target.reply_text(text, reply_markup=keyboard)
+        await target.answer(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("base:page:"), IsOwner())
@@ -70,7 +70,7 @@ async def cb_base_ask(callback: CallbackQuery, session: AsyncSession):
     except (IndexError, ValueError):
         return
 
-    await callback.message.reply_text(
+    await callback.message.answer(
         f"Удалить участника {user_id} из каталога?\n"
         "Его записи на встречи и созданные встречи останутся в базе.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -91,9 +91,9 @@ async def cb_base_delete(callback: CallbackQuery, session: AsyncSession):
 
     deleted = await delete_participant(session, user_id)
     if deleted:
-        await callback.message.reply_text(f"✅ Участник {user_id} удалён из каталога.")
+        await callback.message.answer(f"✅ Участник {user_id} удалён из каталога.")
     else:
-        await callback.message.reply_text(f"ℹ️ Участник {user_id} не найден в каталоге.")
+        await callback.message.answer(f"ℹ️ Участник {user_id} не найден в каталоге.")
 
     total, participants = await get_participants_page(session, page, PAGE_SIZE)
     await _send_base_page(callback, total, participants, page)

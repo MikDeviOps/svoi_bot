@@ -18,19 +18,19 @@ router = Router(name="moderation")
 @router.message(Command("blockuser"), IsOwner())
 async def cmd_blockuser(message: Message, session: AsyncSession):
     if not message.text or len(message.text.split()) < 2:
-        await message.reply_text("Формат: /blockuser ID [причина]")
+        await message.answer("Формат: /blockuser ID [причина]")
         return
 
     try:
         target = int(message.text.split()[1])
     except ValueError:
-        await message.reply_text("Укажите числовой Telegram ID.")
+        await message.answer("Укажите числовой Telegram ID.")
         return
 
     reason = " ".join(message.text.split()[2:])[:300] if len(message.text.split()) > 2 else ""
 
     if target in settings.owners:
-        await message.reply_text("Нельзя заблокировать владельца платформы.")
+        await message.answer("Нельзя заблокировать владельца платформы.")
         return
 
     now = utcnow()
@@ -44,19 +44,19 @@ async def cmd_blockuser(message: Message, session: AsyncSession):
     else:
         session.add(BlockedUser(user_id=target, reason=reason, blocked_at=now, blocked_by=message.from_user.id))
 
-    await message.reply_text(f"⛔ Заблокирован: {target}")
+    await message.answer(f"⛔ Заблокирован: {target}")
 
 
 @router.message(Command("unblockuser"), IsOwner())
 async def cmd_unblockuser(message: Message, session: AsyncSession):
     if not message.text or len(message.text.split()) < 2:
-        await message.reply_text("Формат: /unblockuser ID")
+        await message.answer("Формат: /unblockuser ID")
         return
 
     try:
         target = int(message.text.split()[1])
     except ValueError:
-        await message.reply_text("Укажите числовой Telegram ID.")
+        await message.answer("Укажите числовой Telegram ID.")
         return
 
     result = await session.execute(delete(BlockedUser).where(BlockedUser.user_id == target))
@@ -64,21 +64,21 @@ async def cmd_unblockuser(message: Message, session: AsyncSession):
     await session.execute(delete(PendingUsernameBan).where(PendingUsernameBan.resolved_user_id == target))
 
     if result.rowcount > 0:
-        await message.reply_text(f"✅ Разблокирован: {target}")
+        await message.answer(f"✅ Разблокирован: {target}")
     else:
-        await message.reply_text(f"ℹ️ Пользователь {target} не был заблокирован.")
+        await message.answer(f"ℹ️ Пользователь {target} не был заблокирован.")
 
 
 @router.message(Command("blockgroup"), IsOwner())
 async def cmd_blockgroup(message: Message, session: AsyncSession):
     if not message.text or len(message.text.split()) < 2:
-        await message.reply_text("Формат: /blockgroup ID [причина]")
+        await message.answer("Формат: /blockgroup ID [причина]")
         return
 
     try:
         target = int(message.text.split()[1])
     except ValueError:
-        await message.reply_text("Укажите числовой Telegram ID.")
+        await message.answer("Укажите числовой Telegram ID.")
         return
 
     reason = " ".join(message.text.split()[2:])[:300] if len(message.text.split()) > 2 else ""
@@ -94,26 +94,26 @@ async def cmd_blockgroup(message: Message, session: AsyncSession):
     else:
         session.add(BlockedGroup(chat_id=target, reason=reason, blocked_at=now, blocked_by=message.from_user.id))
 
-    await message.reply_text(f"⛔ Заблокирована группа: {target}")
+    await message.answer(f"⛔ Заблокирована группа: {target}")
 
 
 @router.message(Command("unblockgroup"), IsOwner())
 async def cmd_unblockgroup(message: Message, session: AsyncSession):
     if not message.text or len(message.text.split()) < 2:
-        await message.reply_text("Формат: /unblockgroup ID")
+        await message.answer("Формат: /unblockgroup ID")
         return
 
     try:
         target = int(message.text.split()[1])
     except ValueError:
-        await message.reply_text("Укажите числовой Telegram ID.")
+        await message.answer("Укажите числовой Telegram ID.")
         return
 
     result = await session.execute(delete(BlockedGroup).where(BlockedGroup.chat_id == target))
     if result.rowcount > 0:
-        await message.reply_text(f"✅ Разблокирована группа: {target}")
+        await message.answer(f"✅ Разблокирована группа: {target}")
     else:
-        await message.reply_text(f"ℹ️ Группа {target} не была заблокирована.")
+        await message.answer(f"ℹ️ Группа {target} не была заблокирована.")
 
 
 @router.message(Command("blocks"), IsOwner())
@@ -131,7 +131,7 @@ async def cmd_blocks(message: Message, session: AsyncSession):
     lines += ["", "Группы:"]
     lines += [f"• {g.chat_id} — {g.reason or 'без причины'}" for g in groups] or ["Нет"]
 
-    await message.reply_text("\n".join(lines))
+    await message.answer("\n".join(lines))
 
 
 # --- Русский «бан/разбан @nick|id» (высокий приоритет) ---
@@ -167,7 +167,7 @@ async def russian_ban_message(message: Message, session: AsyncSession):
             candidates.add(int(pending))
 
         if len(candidates) > 1:
-            await message.reply_text("⚠️ Ник встречается у нескольких пользователей в истории. Укажите Telegram ID.")
+            await message.answer("⚠️ Ник встречается у нескольких пользователей в истории. Укажите Telegram ID.")
             return
         target = next(iter(candidates), None)
     else:
@@ -175,7 +175,7 @@ async def russian_ban_message(message: Message, session: AsyncSession):
 
     if verb == "бан":
         if target is not None and target in settings.owners:
-            await message.reply_text("⛔ Владельца СВОИ заблокировать нельзя.")
+            await message.answer("⛔ Владельца СВОИ заблокировать нельзя.")
             return
 
         if username:
@@ -224,7 +224,7 @@ async def russian_ban_message(message: Message, session: AsyncSession):
             else f"ℹ️ Пользователь {identity} не был заблокирован."
         )
 
-    await message.reply_text(response)
+    await message.answer(response)
 
 
 def func_lower_username(col):

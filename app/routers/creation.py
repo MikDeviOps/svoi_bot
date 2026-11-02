@@ -37,7 +37,7 @@ def validate_time(text: str) -> tuple[bool, str]:
 @router.message(F.text == "➕ Создать встречу")
 async def cmd_create_start(message: Message, state: FSMContext):
     if message.chat.type != "private":
-        await message.reply_text("Создание встречи доступно только в личном чате с ботом.")
+        await message.answer("Создание встречи доступно только в личном чате с ботом.")
         return
     await state.set_state(CreateEvent.title)
     await message.answer(
