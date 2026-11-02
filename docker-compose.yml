@@ -22,19 +22,16 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: >
-      redis-server
-      --appendonly yes
-      --requirepass ${REDIS_PASSWORD}
-      --maxmemory-policy noeviction
+    # Пароль отключён (Redis работает внутри изолированной Docker-сети)
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 5s
+      start_period: 10s
     expose:
       - "6379"
     networks:
@@ -43,6 +40,10 @@ services:
   migrator:
     build: .
     command: alembic upgrade head
+    # ВАЖНО: монтируем код с хоста, чтобы файлы миграций из alembic/versions/
+    # были видны контейнеру и сохранялись между запусками
+    volumes:
+      - .:/app
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
