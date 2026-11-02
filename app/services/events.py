@@ -120,45 +120,81 @@ async def events_with_counts(
 # --------------------------------------------------------------------------- #
 # Текст карточки (HTML)
 # --------------------------------------------------------------------------- #
-def _organizer_line(event: dict) -> str:
+def _get_organizer_label(event: dict) -> str:
+    """Возвращает красивую ссылку или имя организатора."""
     username = (event.get("owner_username") or "").strip().lstrip("@")
     if username:
-        return f"👤 Организатор: @{safe_html(username)}"
+        return f"@{safe_html(username)}"
     name = (event.get("owner_name") or "").strip()
-    return f"👤 Организатор: {safe_html(name or 'не указан')}"
+    return safe_html(name or "Не указан")
 
 
 def _card_blocks(event: dict, private_details: bool) -> tuple[list[str], str, list[str]]:
     dt: datetime = event["starts_at"].astimezone(settings.tzinfo)
+    date_str = dt.strftime("%d.%m.%Y")
+    time_str = dt.strftime("%H:%M")
+    weekday = _WEEKDAYS[dt.weekday()]
+
+    # Верхняя часть: самое важное
     head = [
-        f"📌 <b>{safe_html(event['title'])}</b>",
-        f"🏷 {CATEGORIES.get(event['category'], CATEGORIES.get('other', 'Другое'))}",
-        f"🗓 {dt:%d.%m.%Y} ({_WEEKDAYS[dt.weekday()]}) в {dt:%H:%M} МСК",
-        f"📍 {safe_html(event['address'])}",
+        f"<b>📌 {safe_html(event['title'])}</b>",
+        "",
+        f"🏷 <b>Категория:</b> {CATEGORIES.get(event['category'], CATEGORIES.get('other', 'Другое'))}",
+        f"🗓 <b>Когда:</b> {date_str} ({weekday}) в {time_str} МСК",
+        f"📍 <b>Где:</b> {safe_html(event['address'])}",
     ]
 
     description = (event.get("description") or "").strip()
 
-    tail = [f"⚙️ Условия: {safe_html(event['conditions'])}",
-            f"👥 Записано: {event['booked']}/{event['capacity']} · свободно {event['available']}",
-            _organizer_line(event)]
+    # Нижняя часть: детали и статистика
+    tail = [
+        "",
+        f"⚙️ <b>Условия:</b> {safe_html(event['conditions'])}",
+        f"👥 <b>Места:</b> {event['booked']}/{event['capacity']} (свободно {event['available']})",
+        "",
+        f"👤 <b>Организатор:</b> {_get_organizer_label(event)}",
+    ]
 
     if event.get("visibility") == "chat":
         source = (event.get("source_chat_title") or "").strip()
-        tail.append(f"🔒 Только для чата{': ' + safe_html(source) if source else ''}")
+        tail.append(f"🔒 <b>Доступ:</b> Только для чата{': ' + safe_html(source) if source else ''}")
 
     if private_details:
-        tail.append(f"🆔 №{event['id']}")
+        tail.append(f"<code>🆔 Встреча №{event['id']}</code>")
 
     return head, description, tail
 
 
-def _assemble(head: list[str], description: str, tail: list[str]) -> str:
+def _assemble(head: list[str], description: str, tail: list[str], max_len: int) -> str:
     parts = list(head)
     if description:
-        parts.append(f"📝 {safe_html(description)}")
+        parts.append(f"<i>📝 {safe_html(description)}</i>")
     parts.extend(tail)
-    return "\n".join(parts)
+    
+    text = "\n".join(parts)
+    if len(text) <= max_len:
+        return text
+
+    # Пробуем урезать описание, потом убрать совсем.
+    overflow = len(text) - max_len
+    keep = max(0, len(description) - overflow - 2)
+    if keep >= 40:
+        clipped = description[:keep].rstrip() + "…"
+        parts = list(head)
+        parts.append(f"<i>📝 {safe_html(clipped)}</i>")
+        parts.extend(tail)
+        text = "\n".join(parts)
+        if len(text) <= max_len:
+            return text
+
+    # Крайний случай: убираем описание полностью
+    parts = list(head)
+    parts.extend(tail)
+    text = "\n".join(parts)
+    if len(text) <= max_len:
+        return text + "\n<i>📝 Описание сокращено</i>"[: max(0, max_len - len(text))]
+
+    return text[: max_len - 1] + "…"
 
 
 def event_card_text(
@@ -169,26 +205,7 @@ def event_card_text(
 ) -> str:
     """HTML-текст карточки. Описание обрезается так, чтобы не порвать разметку."""
     head, description, tail = _card_blocks(event, private_details)
-
-    text = _assemble(head, description, tail)
-    if len(text) <= max_len:
-        return text
-
-    # Пробуем урезать описание, потом убрать совсем.
-    overflow = len(text) - max_len
-    keep = max(0, len(description) - overflow - 2)
-    if keep >= 40:
-        clipped = description[:keep].rstrip() + "…"
-        text = _assemble(head, clipped, tail)
-        if len(text) <= max_len:
-            return text
-
-    text = _assemble(head, "", tail)
-    if len(text) <= max_len:
-        return text + "\n📝 Описание сокращено"[: max(0, max_len - len(text))]
-
-    # Крайний случай: очень длинные адрес/условия.
-    return text[: max_len - 1] + "…"
+    return _assemble(head, description, tail, max_len)
 
 
 # --------------------------------------------------------------------------- #
@@ -356,15 +373,12 @@ async def refresh_event_messages(
     session: AsyncSession | None = None,
 ) -> int:
     """Перерисовывает все карточки встречи.
-
     ВАЖНО: вызывать ПОСЛЕ commit(), иначе отдельная сессия не увидит изменения.
-    Если передан session — используется она (вызывающий сам управляет транзакцией).
     """
     if session is not None:
         return await _refresh_in_session(bot, event_id, session)
 
     from app.db.engine import session_scope
-
     async with session_scope() as own_session:
         return await _refresh_in_session(bot, event_id, own_session)
 
@@ -478,7 +492,7 @@ async def cleanup_finished_event_cards(bot: Bot, *, limit: int = 150) -> int:
             .where(Event.starts_at <= now, Event.photo_file_id != "")
             .values(photo_file_id="")
         )
-        # commit выполнит session_scope
+        # commit выполнится автоматически при выходе из session_scope
 
     if processed:
         logger.info("Finished-event cleanup: processed %d cards", processed)
